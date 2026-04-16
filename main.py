@@ -1,6 +1,7 @@
 import requests
 import time
 import os
+import yfinance as yf
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -11,14 +12,19 @@ if not TOKEN:
 URL = f"https://api.telegram.org/bot{TOKEN}"
 last_update_id = 0
 
-print("Entry Bot jalan...")
+print("Entry Bot jalan dengan scan harga real...")
 
 WATCHLIST = [
     "BRIS",
     "ANTM",
     "INCO",
     "PTBA",
-    "TLKM"
+    "TLKM",
+    "MDKA",
+    "ADMR",
+    "EXCL",
+    "ICBP",
+    "INDF"
 ]
 
 def send_message(chat_id, text):
@@ -28,11 +34,104 @@ def send_message(chat_id, text):
         timeout=30
     )
 
+def yahoo_symbol(symbol):
+    symbol = symbol.upper().strip()
+    if symbol.endswith(".JK"):
+        return symbol
+    return f"{symbol}.JK"
+
+def get_market_snapshot(symbol):
+    ys = yahoo_symbol(symbol)
+
+    try:
+        ticker = yf.Ticker(ys)
+        hist = ticker.history(period="5d", interval="1d")
+
+        if hist is None or hist.empty or len(hist) < 2:
+            return None
+
+        close = float(hist["Close"].iloc[-1])
+        prev_close = float(hist["Close"].iloc[-2])
+        high = float(hist["High"].iloc[-1])
+        low = float(hist["Low"].iloc[-1])
+
+        change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0
+
+        score = 50
+        if close > prev_close:
+            score += 15
+        if close >= high * 0.98:
+            score += 10
+        if change_pct > 1:
+            score += 10
+        if change_pct > 2:
+            score += 10
+        if close > (low + ((high - low) * 0.6)):
+            score += 5
+
+        if change_pct > 1.5:
+            setup = "Breakout Prepare"
+        elif change_pct > 0:
+            setup = "Pullback Prepare"
+        else:
+            setup = "Watch Only"
+
+        bid_low = round(close * 0.998, 2)
+        bid_high = round(close * 0.9995, 2)
+        trigger = round(close * 1.002, 2)
+        invalidation = round(close * 0.992, 2)
+
+        return {
+            "symbol": symbol.upper(),
+            "close": round(close, 2),
+            "prev_close": round(prev_close, 2),
+            "change_pct": round(change_pct, 2),
+            "score": int(score),
+            "setup": setup,
+            "bid_low": bid_low,
+            "bid_high": bid_high,
+            "trigger": trigger,
+            "invalidation": invalidation
+        }
+
+    except Exception as e:
+        print("Yahoo error:", symbol, e)
+        return None
+
 def build_watchlist_text():
     text = "Watchlist saham syariah:\n\n"
     for s in WATCHLIST:
         text += f"- {s}\n"
     return text
+
+def build_scan_text():
+    results = []
+
+    for symbol in WATCHLIST:
+        data = get_market_snapshot(symbol)
+        if data:
+            results.append(data)
+
+    if not results:
+        return "Data scan belum tersedia."
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    top = results[:3]
+
+    lines = ["TOP SETUP HARI INI\n"]
+
+    for i, item in enumerate(top, start=1):
+        lines.append(
+            f"{i}. {item['symbol']}\n"
+            f"Score: {item['score']}\n"
+            f"Setup: {item['setup']}\n"
+            f"Harga: {item['close']:.2f} ({item['change_pct']:+.2f}%)\n"
+            f"Bid: {item['bid_low']:.2f} - {item['bid_high']:.2f}\n"
+            f"Trigger: {item['trigger']:.2f}\n"
+            f"Invalidation: {item['invalidation']:.2f}\n"
+        )
+
+    return "\n".join(lines)
 
 def build_entry_test_text():
     return (
@@ -55,9 +154,10 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot aktif.\n\n"
+            "Entry Bot aktif (scan harga real).\n\n"
             "Command:\n"
             "/watchlist\n"
+            "/scan\n"
             "/entrytest\n"
             "/entrystart"
         )
@@ -65,6 +165,11 @@ def handle_command(chat_id, text):
 
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
+        return
+
+    if cmd == "/scan":
+        send_message(chat_id, "Sedang scan watchlist...")
+        send_message(chat_id, build_scan_text())
         return
 
     if cmd == "/entrytest":
@@ -75,8 +180,7 @@ def handle_command(chat_id, text):
         send_message(
             chat_id,
             "Mode entry dimulai.\n"
-            "Versi awal ini masih manual sederhana.\n"
-            "Gunakan /watchlist dan /entrytest dulu."
+            "Gunakan /scan untuk melihat ranking setup terbaik hari ini."
         )
         return
 
