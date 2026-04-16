@@ -42,7 +42,7 @@ state = {
     "last_scan_minute_key": ""
 }
 
-print("Entry Bot jalan dengan Top 5 autoscan...")
+print("Entry Bot jalan dengan Top 5 autoscan + handoff...")
 
 def load_chat():
     global chat_id_global
@@ -151,6 +151,10 @@ def get_market_snapshot(symbol):
         trigger = round(close * 1.0025, 2)
         invalidation = round(close * 0.9925, 2)
 
+        # handoff ke Exit Bot
+        tp1 = round(close * 1.01, 2)
+        tp2 = round(close * 1.02, 2)
+
         return {
             "symbol": symbol.upper(),
             "close": round(close, 2),
@@ -161,6 +165,8 @@ def get_market_snapshot(symbol):
             "bid_high": bid_high,
             "trigger": trigger,
             "invalidation": invalidation,
+            "tp1": tp1,
+            "tp2": tp2,
             "reason": ", ".join(reasons[:2]) if reasons else "belum ada alasan kuat"
         }
 
@@ -199,7 +205,12 @@ def build_scan_text():
             f"Bid Zone: {item['bid_low']:.2f} - {item['bid_high']:.2f}\n"
             f"Trigger: {item['trigger']:.2f}\n"
             f"Invalidation: {item['invalidation']:.2f}\n"
-            f"Alasan: {item['reason']}\n"
+            f"Alasan: {item['reason']}\n\n"
+            f"Handoff ke Exit Bot:\n"
+            f"Jika entry jadi di sekitar {item['close']:.2f}\n"
+            f"/startpos {item['symbol']} {item['close']:.2f}\n"
+            f"/setsl {item['symbol']} {item['invalidation']:.2f}\n"
+            f"/settp {item['symbol']} {item['tp1']:.2f} {item['tp2']:.2f}\n"
         )
 
     lines.append("Catatan: siapkan antrean bid, jangan langsung kejar harga.")
@@ -215,7 +226,6 @@ def try_autoscan():
         return
 
     now = datetime.now()
-    # kirim hanya pada menit 00, 15, 30, 45
     if now.minute not in [0, 15, 30, 45]:
         return
 
@@ -225,7 +235,6 @@ def try_autoscan():
 
     scan_text = build_scan_text()
 
-    # kirim hanya kalau hasil berubah
     if scan_text != state.get("last_sent_text", ""):
         send_message(chat_id_global, "AUTOSCAN AKTIF\n\n" + scan_text)
         state["last_sent_text"] = scan_text
@@ -241,11 +250,10 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot aktif (Top 5 + autoscan).\n\n"
+            "Entry Bot aktif (Top 5 + autoscan + handoff).\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
-            "/entrytest\n"
             "/autoscanon\n"
             "/autoscanoff\n"
             "/statusauto"
@@ -259,18 +267,6 @@ def handle_command(chat_id, text):
     if cmd == "/scan":
         send_message(chat_id, "Sedang scan watchlist Top 5...")
         send_message(chat_id, build_scan_text())
-        return
-
-    if cmd == "/entrytest":
-        send_message(
-            chat_id,
-            "ENTRY TEST\n\n"
-            "1. BRIS\n"
-            "Setup: BREAKOUT PREPARE\n"
-            "Bid Zone: 2440-2444\n"
-            "Trigger: 2446\n"
-            "Invalidation: 2432"
-        )
         return
 
     if cmd == "/autoscanon":
