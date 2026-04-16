@@ -1,6 +1,8 @@
 import requests
 import time
 import os
+import json
+from datetime import datetime
 import yfinance as yf
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -11,8 +13,6 @@ if not TOKEN:
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
 last_update_id = 0
-
-print("Entry Bot jalan dengan scan Top 5 harga real...")
 
 WATCHLIST = [
     "BRIS",
@@ -31,6 +31,45 @@ WATCHLIST = [
     "ACES",
     "ERAA"
 ]
+
+CHAT_FILE = "entry_chat.json"
+STATE_FILE = "entry_state.json"
+
+chat_id_global = None
+state = {
+    "autoscan": False,
+    "last_sent_text": "",
+    "last_scan_minute_key": ""
+}
+
+print("Entry Bot jalan dengan Top 5 autoscan...")
+
+def load_chat():
+    global chat_id_global
+    if os.path.exists(CHAT_FILE):
+        try:
+            with open(CHAT_FILE, "r") as f:
+                data = json.load(f)
+                chat_id_global = data.get("chat_id")
+        except:
+            chat_id_global = None
+
+def save_chat():
+    with open(CHAT_FILE, "w") as f:
+        json.dump({"chat_id": chat_id_global}, f)
+
+def load_state():
+    global state
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except:
+            pass
+
+def save_state():
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 def send_message(chat_id, text):
     requests.post(
@@ -115,7 +154,6 @@ def get_market_snapshot(symbol):
         return {
             "symbol": symbol.upper(),
             "close": round(close, 2),
-            "prev_close": round(prev_close, 2),
             "change_pct": round(change_pct, 2),
             "score": int(score),
             "setup": setup,
@@ -167,33 +205,50 @@ def build_scan_text():
     lines.append("Catatan: siapkan antrean bid, jangan langsung kejar harga.")
     return "\n".join(lines)
 
-def build_entry_test_text():
-    return (
-        "ENTRY TEST\n\n"
-        "1. BRIS\n"
-        "Setup: BREAKOUT PREPARE\n"
-        "Bid Zone: 2440-2444\n"
-        "Trigger: 2446\n"
-        "Invalidation: 2432\n\n"
-        "2. ANTM\n"
-        "Setup: PULLBACK PREPARE\n"
-        "Bid Zone: 1830-1834\n"
-        "Trigger: 1838\n"
-        "Invalidation: 1818"
-    )
+def try_autoscan():
+    global state, chat_id_global
+
+    if not chat_id_global:
+        return
+
+    if not state.get("autoscan"):
+        return
+
+    now = datetime.now()
+    # kirim hanya pada menit 00, 15, 30, 45
+    if now.minute not in [0, 15, 30, 45]:
+        return
+
+    minute_key = now.strftime("%Y-%m-%d %H:%M")
+    if state.get("last_scan_minute_key") == minute_key:
+        return
+
+    scan_text = build_scan_text()
+
+    # kirim hanya kalau hasil berubah
+    if scan_text != state.get("last_sent_text", ""):
+        send_message(chat_id_global, "AUTOSCAN AKTIF\n\n" + scan_text)
+        state["last_sent_text"] = scan_text
+
+    state["last_scan_minute_key"] = minute_key
+    save_state()
 
 def handle_command(chat_id, text):
+    global chat_id_global, state
+
     cmd = text.strip().lower()
 
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot aktif (Top 5 scan harga real).\n\n"
+            "Entry Bot aktif (Top 5 + autoscan).\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
             "/entrytest\n"
-            "/entrystart"
+            "/autoscanon\n"
+            "/autoscanoff\n"
+            "/statusauto"
         )
         return
 
@@ -207,18 +262,38 @@ def handle_command(chat_id, text):
         return
 
     if cmd == "/entrytest":
-        send_message(chat_id, build_entry_test_text())
-        return
-
-    if cmd == "/entrystart":
         send_message(
             chat_id,
-            "Mode entry dimulai.\n"
-            "Gunakan /scan untuk melihat Top 5 setup terbaik hari ini."
+            "ENTRY TEST\n\n"
+            "1. BRIS\n"
+            "Setup: BREAKOUT PREPARE\n"
+            "Bid Zone: 2440-2444\n"
+            "Trigger: 2446\n"
+            "Invalidation: 2432"
         )
         return
 
+    if cmd == "/autoscanon":
+        state["autoscan"] = True
+        save_state()
+        send_message(chat_id, "Autoscan diaktifkan. Bot akan cek tiap 15 menit dan kirim hanya jika hasil berubah.")
+        return
+
+    if cmd == "/autoscanoff":
+        state["autoscan"] = False
+        save_state()
+        send_message(chat_id, "Autoscan dimatikan.")
+        return
+
+    if cmd == "/statusauto":
+        status = "ON" if state.get("autoscan") else "OFF"
+        send_message(chat_id, f"Status autoscan: {status}")
+        return
+
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
+
+load_chat()
+load_state()
 
 while True:
     try:
@@ -234,9 +309,12 @@ while True:
             if "message" in update:
                 chat_id = update["message"]["chat"]["id"]
                 text = update["message"].get("text", "")
+                chat_id_global = chat_id
+                save_chat()
                 handle_command(chat_id, text)
 
-        time.sleep(2)
+        try_autoscan()
+        time.sleep(5)
 
     except Exception as e:
         print("Error:", e)
