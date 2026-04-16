@@ -42,7 +42,7 @@ state = {
     "last_scan_minute_key": ""
 }
 
-print("Entry Bot jalan dengan Top 5 autoscan + handoff...")
+print("Entry Bot jalan dengan Top 5 autoscan + handoff + validate...")
 
 def load_chat():
     global chat_id_global
@@ -83,6 +83,15 @@ def yahoo_symbol(symbol):
     if symbol.endswith(".JK"):
         return symbol
     return f"{symbol}.JK"
+
+def validation_status(close, bid_low, bid_high, trigger, invalidation):
+    if close > trigger * 1.005:
+        return "❌ INVALID", "harga sudah terlalu tinggi, jangan kejar"
+    if close <= invalidation * 1.002:
+        return "❌ INVALID", "harga terlalu dekat area invalidation"
+    if bid_low <= close <= trigger:
+        return "✅ VALID ENTRY", "harga masih dekat area eksekusi dan belum lari"
+    return "⚠️ WAIT", "setup ada, tapi tunggu harga masuk area ideal"
 
 def get_market_snapshot(symbol):
     ys = yahoo_symbol(symbol)
@@ -151,9 +160,10 @@ def get_market_snapshot(symbol):
         trigger = round(close * 1.0025, 2)
         invalidation = round(close * 0.9925, 2)
 
-        # handoff ke Exit Bot
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
+
+        v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation)
 
         return {
             "symbol": symbol.upper(),
@@ -167,6 +177,8 @@ def get_market_snapshot(symbol):
             "invalidation": invalidation,
             "tp1": tp1,
             "tp2": tp2,
+            "validation": v_status,
+            "validation_reason": v_reason,
             "reason": ", ".join(reasons[:2]) if reasons else "belum ada alasan kuat"
         }
 
@@ -205,15 +217,16 @@ def build_scan_text():
             f"Bid Zone: {item['bid_low']:.2f} - {item['bid_high']:.2f}\n"
             f"Trigger: {item['trigger']:.2f}\n"
             f"Invalidation: {item['invalidation']:.2f}\n"
+            f"Status: {item['validation']}\n"
+            f"Validasi: {item['validation_reason']}\n"
             f"Alasan: {item['reason']}\n\n"
             f"Handoff ke Exit Bot:\n"
-            f"Jika entry jadi di sekitar {item['close']:.2f}\n"
             f"/startpos {item['symbol']} {item['close']:.2f}\n"
             f"/setsl {item['symbol']} {item['invalidation']:.2f}\n"
             f"/settp {item['symbol']} {item['tp1']:.2f} {item['tp2']:.2f}\n"
         )
 
-    lines.append("Catatan: siapkan antrean bid, jangan langsung kejar harga.")
+    lines.append("Catatan: fokus pada yang VALID ENTRY, hindari yang INVALID.")
     return "\n".join(lines)
 
 def try_autoscan():
@@ -250,7 +263,7 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot aktif (Top 5 + autoscan + handoff).\n\n"
+            "Entry Bot aktif (Top 5 + autoscan + handoff + validate).\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
