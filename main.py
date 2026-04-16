@@ -12,7 +12,7 @@ if not TOKEN:
 URL = f"https://api.telegram.org/bot{TOKEN}"
 last_update_id = 0
 
-print("Entry Bot jalan dengan scan harga real...")
+print("Entry Bot jalan dengan scan Top 5 harga real...")
 
 WATCHLIST = [
     "BRIS",
@@ -24,7 +24,12 @@ WATCHLIST = [
     "ADMR",
     "EXCL",
     "ICBP",
-    "INDF"
+    "INDF",
+    "KLBF",
+    "SIDO",
+    "MAPI",
+    "ACES",
+    "ERAA"
 ]
 
 def send_message(chat_id, text):
@@ -45,41 +50,67 @@ def get_market_snapshot(symbol):
 
     try:
         ticker = yf.Ticker(ys)
-        hist = ticker.history(period="5d", interval="1d")
+        hist = ticker.history(period="10d", interval="1d")
 
-        if hist is None or hist.empty or len(hist) < 2:
+        if hist is None or hist.empty or len(hist) < 3:
             return None
 
         close = float(hist["Close"].iloc[-1])
         prev_close = float(hist["Close"].iloc[-2])
+        prev2_close = float(hist["Close"].iloc[-3])
         high = float(hist["High"].iloc[-1])
         low = float(hist["Low"].iloc[-1])
 
         change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0
+        prev_change_pct = ((prev_close - prev2_close) / prev2_close) * 100 if prev2_close else 0
+
+        day_range = high - low if high > low else 0.01
+        close_range_pct = (close - low) / day_range
 
         score = 50
+        reasons = []
+
         if close > prev_close:
-            score += 15
-        if close >= high * 0.98:
-            score += 10
+            score += 12
+            reasons.append("close di atas hari sebelumnya")
+
         if change_pct > 1:
             score += 10
+            reasons.append("momentum harian > 1%")
+
         if change_pct > 2:
-            score += 10
-        if close > (low + ((high - low) * 0.6)):
+            score += 8
+            reasons.append("momentum kuat > 2%")
+
+        if close_range_pct >= 0.7:
+            score += 8
+            reasons.append("close dekat high")
+
+        if prev_change_pct > 0 and change_pct > 0:
+            score += 7
+            reasons.append("2 hari berturut bullish")
+
+        if close >= high * 0.98:
             score += 5
+            reasons.append("tekan area high")
 
-        if change_pct > 1.5:
-            setup = "Breakout Prepare"
-        elif change_pct > 0:
-            setup = "Pullback Prepare"
+        if change_pct < 0:
+            score -= 10
+
+        if close_range_pct < 0.4:
+            score -= 5
+
+        if score >= 80:
+            setup = "BREAKOUT PREPARE"
+        elif score >= 68:
+            setup = "PULLBACK PREPARE"
         else:
-            setup = "Watch Only"
+            setup = "WATCH ONLY"
 
-        bid_low = round(close * 0.998, 2)
+        bid_low = round(close * 0.9975, 2)
         bid_high = round(close * 0.9995, 2)
-        trigger = round(close * 1.002, 2)
-        invalidation = round(close * 0.992, 2)
+        trigger = round(close * 1.0025, 2)
+        invalidation = round(close * 0.9925, 2)
 
         return {
             "symbol": symbol.upper(),
@@ -91,7 +122,8 @@ def get_market_snapshot(symbol):
             "bid_low": bid_low,
             "bid_high": bid_high,
             "trigger": trigger,
-            "invalidation": invalidation
+            "invalidation": invalidation,
+            "reason": ", ".join(reasons[:2]) if reasons else "belum ada alasan kuat"
         }
 
     except Exception as e:
@@ -116,9 +148,9 @@ def build_scan_text():
         return "Data scan belum tersedia."
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    top = results[:3]
+    top = results[:5]
 
-    lines = ["TOP SETUP HARI INI\n"]
+    lines = ["TOP 5 SETUP HARI INI\n"]
 
     for i, item in enumerate(top, start=1):
         lines.append(
@@ -126,23 +158,25 @@ def build_scan_text():
             f"Score: {item['score']}\n"
             f"Setup: {item['setup']}\n"
             f"Harga: {item['close']:.2f} ({item['change_pct']:+.2f}%)\n"
-            f"Bid: {item['bid_low']:.2f} - {item['bid_high']:.2f}\n"
+            f"Bid Zone: {item['bid_low']:.2f} - {item['bid_high']:.2f}\n"
             f"Trigger: {item['trigger']:.2f}\n"
             f"Invalidation: {item['invalidation']:.2f}\n"
+            f"Alasan: {item['reason']}\n"
         )
 
+    lines.append("Catatan: siapkan antrean bid, jangan langsung kejar harga.")
     return "\n".join(lines)
 
 def build_entry_test_text():
     return (
         "ENTRY TEST\n\n"
         "1. BRIS\n"
-        "Setup: Breakout Prepare\n"
+        "Setup: BREAKOUT PREPARE\n"
         "Bid Zone: 2440-2444\n"
         "Trigger: 2446\n"
         "Invalidation: 2432\n\n"
         "2. ANTM\n"
-        "Setup: Pullback Prepare\n"
+        "Setup: PULLBACK PREPARE\n"
         "Bid Zone: 1830-1834\n"
         "Trigger: 1838\n"
         "Invalidation: 1818"
@@ -154,7 +188,7 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot aktif (scan harga real).\n\n"
+            "Entry Bot aktif (Top 5 scan harga real).\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
@@ -168,7 +202,7 @@ def handle_command(chat_id, text):
         return
 
     if cmd == "/scan":
-        send_message(chat_id, "Sedang scan watchlist...")
+        send_message(chat_id, "Sedang scan watchlist Top 5...")
         send_message(chat_id, build_scan_text())
         return
 
@@ -180,7 +214,7 @@ def handle_command(chat_id, text):
         send_message(
             chat_id,
             "Mode entry dimulai.\n"
-            "Gunakan /scan untuk melihat ranking setup terbaik hari ini."
+            "Gunakan /scan untuk melihat Top 5 setup terbaik hari ini."
         )
         return
 
