@@ -5,12 +5,10 @@
 # OJK menyebut DES Periode II 2025 berisi 688 saham, jadi kemungkinan ada 1 kode yang tidak terbaca sempurna dari PDF.
 
 BANK
-BBMI
 BRIS
 BTPS
 JMAS
 PNBS
-SPOT
 AADI
 ABMM
 ADMR
@@ -664,7 +662,6 @@ LRNA
 MIRA
 MITI
 NELY
-PJBH
 PPGL
 PURA
 SAFE
@@ -676,18 +673,4 @@ TNCA
 TRJA
 TRUK
 WEHA
-DMIG
-GRHA
-JASS
-LNGN
-PIPG
-ALDI
-BRAU
-CPDW
-INSA
-MASA
-RINA
-SIMM
-SING
-SQBB
 TRUE
