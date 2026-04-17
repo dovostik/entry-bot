@@ -19,11 +19,13 @@ STATE_FILE = "entry_state.json"
 WATCHLIST_FILE = "watchlist_syariah.txt"
 
 chat_id_global = None
-state = {"autoscan": False, "last_sent_text": "", "last_scan_minute_key": ""}
+state = {"autoscan": False, "last_scan_minute_key": "", "active_candidates": {}}
 
 MIN_VALUE_TRADED = 10000000000
 MIN_DAILY_RANGE_PCT = 2.0
 MAX_DISTANCE_TO_BID_PCT = 5.0
+SCAN_INTERVAL_MINUTES = 5
+MEMORY_MISS_LIMIT = 2
 
 def load_chat():
     global chat_id_global
@@ -43,9 +45,12 @@ def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
+                loaded = json.load(f)
+                state.update(loaded)
         except Exception:
             pass
+    if "active_candidates" not in state:
+        state["active_candidates"] = {}
 
 def save_state():
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -84,7 +89,6 @@ def calc_indicators(df):
     out["MA50"] = out["Close"].rolling(50).mean()
     out["MA100"] = out["Close"].rolling(100).mean()
     out["MA200"] = out["Close"].rolling(200).mean()
-
     delta = out["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -92,7 +96,6 @@ def calc_indicators(df):
     avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     out["RSI"] = (100 - (100 / (1 + rs))).fillna(50)
-
     ema12 = out["Close"].ewm(span=12, adjust=False).mean()
     ema26 = out["Close"].ewm(span=26, adjust=False).mean()
     out["MACD"] = ema12 - ema26
@@ -106,10 +109,10 @@ def timing_label(close, low, high):
     day_range = high - low if high > low else 0.01
     close_range_pct = (close - low) / day_range
     if close_range_pct < 0.45:
-        return "EARLY", "masih awal gerakan", close_range_pct
+        return "EARLY", "masih awal gerakan"
     elif close_range_pct < 0.72:
-        return "MID", "sudah bergerak, masih bisa", close_range_pct
-    return "LATE", "sudah tinggi di range", close_range_pct
+        return "MID", "sudah bergerak, masih bisa"
+    return "LATE", "sudah tinggi di range"
 
 def classify_volume(value_traded, valavg5):
     if pd.isna(valavg5) or valavg5 <= 0:
@@ -125,7 +128,6 @@ def detect_fake_breakout(close, high, low, open_price, recent_high, change_pct):
     close_range_pct = (close - low) / day_range
     upper_wick_pct = (high - max(open_price, close)) / day_range
     breakout_attempt = high >= recent_high * 0.995
-
     fake = False
     reason = "-"
     if breakout_attempt and close < recent_high and upper_wick_pct > 0.35:
@@ -137,7 +139,7 @@ def detect_fake_breakout(close, high, low, open_price, recent_high, change_pct):
     elif breakout_attempt and change_pct < 0.3:
         fake = True
         reason = "breakout tidak punya follow-through"
-    return fake, reason, breakout_attempt, close_range_pct, upper_wick_pct
+    return fake, reason, breakout_attempt
 
 def get_base_zone(df):
     recent = df.iloc[-9:-1].copy()
@@ -156,7 +158,6 @@ def detect_setup(close, ma20, ma50, base_low, base_high, value_traded, valavg5, 
     in_base = base_low <= close <= base_high * 1.01
     near_ma_support = abs(close - ma20) / close < 0.02 or abs(close - ma50) / close < 0.03
     strong_value = (not pd.isna(valavg5)) and valavg5 > 0 and value_traded > valavg5 * 1.2
-
     if in_base and near_ma_support:
         return "SIDEWAY ACCUMULATION PREPARE"
     if near_base_low and near_ma_support:
@@ -201,7 +202,6 @@ def get_market_snapshot(symbol):
         hist = ticker.history(period="1y", interval="1d")
         if hist is None or hist.empty or len(hist) < 210:
             return None
-
         hist = calc_indicators(hist)
         last = hist.iloc[-1]
         prev = hist.iloc[-2]
@@ -231,9 +231,8 @@ def get_market_snapshot(symbol):
         daily_range_pct = ((high - low) / close) * 100 if close else 0
 
         recent_high = float(hist["High"].iloc[-6:-1].max())
-        fake_breakout, fake_reason, breakout_attempt, close_range_pct, upper_wick_pct = detect_fake_breakout(close, high, low, open_price, recent_high, change_pct)
-
-        timing, timing_reason, range_pct = timing_label(close, low, high)
+        fake_breakout, fake_reason, breakout_attempt = detect_fake_breakout(close, high, low, open_price, recent_high, change_pct)
+        timing, timing_reason = timing_label(close, low, high)
         volume_label, volume_score = classify_volume(value_traded, valavg5)
         base_low, base_high, is_sideway = get_base_zone(hist)
 
@@ -343,8 +342,6 @@ def get_market_snapshot(symbol):
             confirmation += 16
         if change_pct > 1:
             confirmation += 3
-        if close_range_pct >= 0.7 and not fake_breakout:
-            confirmation += 3
 
         if fake_breakout:
             penalty += 24
@@ -352,31 +349,15 @@ def get_market_snapshot(symbol):
             penalty += 12
         if close > trigger * 1.01 and setup != "VALID BREAKOUT EXECUTE":
             penalty += 20
-        if upper_wick_pct > 0.35:
-            penalty += 8
 
-        score = int(round(
-            0.25 * (trend * 4) +
-            0.25 * structure +
-            0.25 * execution +
-            0.15 * confirmation +
-            0.10 * max(volume_score, 0) -
-            0.30 * penalty + 50
-        ))
-
+        score = int(round(0.25 * (trend * 4) + 0.25 * structure + 0.25 * execution + 0.15 * confirmation + 0.10 * max(volume_score, 0) - 0.30 * penalty + 50))
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
         v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score)
         if v_status == "INVALID":
             return None
 
-        confidence_raw = score
-        if confidence_raw >= 85:
-            confidence = "HIGH"
-        elif confidence_raw >= 70:
-            confidence = "MEDIUM"
-        else:
-            confidence = "LOW"
+        confidence = "HIGH" if score >= 85 else "MEDIUM" if score >= 70 else "LOW"
 
         return {
             "symbol": symbol.upper(),
@@ -395,14 +376,93 @@ def get_market_snapshot(symbol):
             "invalidation": invalidation,
             "tp1": tp1,
             "tp2": tp2,
-            "fake_breakout": "Ya" if fake_breakout else "Tidak",
-            "fake_reason": fake_reason,
             "reason": ", ".join(reasons[:2]) if reasons else "belum ada alasan kuat",
             "tech_summary": ", ".join(tech_notes[:4]),
             "confidence": confidence
         }
     except Exception:
         return None
+
+def candidate_key(data):
+    return data["symbol"]
+
+def decision_status(data):
+    return "ACTIVE BID" if data["status"] == "VALID ENTRY" else "WATCH WAIT"
+
+def format_new_candidate(data):
+    lines = ["PRIORITAS BARU", "", data["symbol"], f"Status: {decision_status(data)}", f"Setup: {data['setup']}", f"Confidence: {data['confidence']}", f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)", f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}", f"Trigger: {data['trigger']:.2f}", f"Invalidation: {data['invalidation']:.2f}", f"Alasan: {data['reason']}"]
+    return "\n".join(lines)
+
+def format_cancel_candidate(prev, reason):
+    lines = ["CANCEL BID", "", prev["symbol"], f"Status sebelumnya: {prev.get('decision_status', '-')}", f"Alasan: {reason}"]
+    return "\n".join(lines)
+
+def format_weakening_candidate(prev, new):
+    lines = ["WARNING", "", new["symbol"], f"Status berubah: {prev.get('decision_status', '-')} -> {decision_status(new)}", f"Harga sekarang: {new['close']:.2f}", "Alasan: kualitas menurun, jangan tambah antrean baru"]
+    return "\n".join(lines)
+
+def scan_candidates():
+    valid_pullback = []
+    valid_breakout = []
+    wait_pullback = []
+    wait_breakout = []
+    for symbol in WATCHLIST:
+        data = get_market_snapshot(symbol)
+        if not data:
+            continue
+        if data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+            if data["status"] == "VALID ENTRY":
+                valid_pullback.append(data)
+            elif data["status"] == "WAIT":
+                wait_pullback.append(data)
+        elif data["setup"] == "VALID BREAKOUT EXECUTE":
+            if data["status"] == "VALID ENTRY":
+                valid_breakout.append(data)
+            elif data["status"] == "WAIT":
+                wait_breakout.append(data)
+    valid_pullback.sort(key=lambda x: x["score"], reverse=True)
+    valid_breakout.sort(key=lambda x: x["score"], reverse=True)
+    wait_pullback.sort(key=lambda x: x["score"], reverse=True)
+    wait_breakout.sort(key=lambda x: x["score"], reverse=True)
+    selected = valid_pullback[:3] + valid_breakout[:3] + wait_pullback[:3] + wait_breakout[:3]
+    selected.sort(key=lambda x: x["score"], reverse=True)
+    return selected
+
+def process_event_driven_scan():
+    global state, chat_id_global
+    current = scan_candidates()
+    prev_map = state.get("active_candidates", {})
+    new_map = {}
+    for rank, data in enumerate(current, start=1):
+        key = candidate_key(data)
+        prev = prev_map.get(key)
+        data["rank"] = rank
+        data["decision_status"] = decision_status(data)
+        data["miss_count"] = 0
+        new_map[key] = data
+        if prev is None:
+            send_message(chat_id_global, format_new_candidate(data))
+        else:
+            prev_status = prev.get("decision_status")
+            new_status = data["decision_status"]
+            prev_score = prev.get("score", 0)
+            new_score = data["score"]
+            if prev_status == "ACTIVE BID" and new_status == "WATCH WAIT":
+                send_message(chat_id_global, format_weakening_candidate(prev, data))
+            elif prev_status == "WATCH WAIT" and new_status == "ACTIVE BID":
+                send_message(chat_id_global, format_new_candidate(data))
+            elif new_score < prev_score - 12:
+                send_message(chat_id_global, format_weakening_candidate(prev, data))
+    for key, prev in prev_map.items():
+        if key not in new_map:
+            miss = prev.get("miss_count", 0) + 1
+            prev["miss_count"] = miss
+            if miss >= MEMORY_MISS_LIMIT:
+                send_message(chat_id_global, format_cancel_candidate(prev, "kandidat hilang dari prioritas beberapa scan berturut"))
+            else:
+                new_map[key] = prev
+    state["active_candidates"] = new_map
+    save_state()
 
 def build_watchlist_text():
     text = f"Watchlist syariah aktif: {len(WATCHLIST)} saham\n\n"
@@ -412,88 +472,32 @@ def build_watchlist_text():
         text += f"\n\n... dan {len(WATCHLIST)-100} saham lain"
     return text
 
-def add_candidate_block(lines, title, candidates):
-    if not candidates:
-        return
-    lines.append(title)
-    lines.append("")
-    for i, item in enumerate(candidates, start=1):
-        lines.append(f"{i}. {item['symbol']}")
-        lines.append(f"Score: {item['score']} | Confidence: {item['confidence']}")
-        lines.append(f"Setup: {item['setup']}")
-        lines.append(f"Harga: {item['close']:.2f} ({item['change_pct']:+.2f}%)")
-        lines.append(f"Volume: {item['volume']}")
-        lines.append(f"Status: {item['status']}")
-        lines.append(f"Timing: {item['timing']}")
-        lines.append(f"Bid Zone: {item['bid_low']:.2f} - {item['bid_high']:.2f}")
-        lines.append(f"Trigger: {item['trigger']:.2f}")
-        lines.append(f"Invalidation: {item['invalidation']:.2f}")
-        lines.append(f"Teknikal: {item['tech_summary']}")
-        lines.append(f"Alasan: {item['reason']}")
-        if item["status"] == "VALID ENTRY":
-            lines.append("Handoff ke Exit Bot:")
-            lines.append(f"/startpos {item['symbol']} {item['close']:.2f}")
-            lines.append(f"/setsl {item['symbol']} {item['invalidation']:.2f}")
-            lines.append(f"/settp {item['symbol']} {item['tp1']:.2f} {item['tp2']:.2f}")
-        lines.append("")
-
-def build_scan_text():
-    pullback_valid = []
-    breakout_valid = []
-    wait_pullback = []
-    wait_breakout = []
-
-    for symbol in WATCHLIST:
-        data = get_market_snapshot(symbol)
-        if not data:
-            continue
-        if data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
-            if data["status"] == "VALID ENTRY":
-                pullback_valid.append(data)
-            elif data["status"] == "WAIT":
-                wait_pullback.append(data)
-        elif data["setup"] == "VALID BREAKOUT EXECUTE":
-            if data["status"] == "VALID ENTRY":
-                breakout_valid.append(data)
-            elif data["status"] == "WAIT":
-                wait_breakout.append(data)
-
-    pullback_valid.sort(key=lambda x: x["score"], reverse=True)
-    breakout_valid.sort(key=lambda x: x["score"], reverse=True)
-    wait_pullback.sort(key=lambda x: x["score"], reverse=True)
-    wait_breakout.sort(key=lambda x: x["score"], reverse=True)
-
-    top_pullback = pullback_valid[:3]
-    top_breakout = breakout_valid[:3]
-    cad_pullback = wait_pullback[:3]
-    cad_breakout = wait_breakout[:3]
-
-    lines = ["AUTOSCAN FINAL PRO V14", ""]
-    add_candidate_block(lines, "3 PULLBACK VALID", top_pullback)
-    add_candidate_block(lines, "3 BREAKOUT VALID", top_breakout)
-    add_candidate_block(lines, "PULLBACK MENARIK (WAIT)", cad_pullback)
-    add_candidate_block(lines, "BREAKOUT MENARIK (WAIT)", cad_breakout)
-
-    if len(lines) <= 2:
-        return "Tidak ada kandidat valid saat ini. Pasar belum memberi area entry yang aman."
-
-    lines.append("Rule trading mode: INVALID tidak ditampilkan, volume lemah gugur, timing LATE gugur, handoff hanya untuk VALID ENTRY.")
+def build_status_text():
+    active = state.get("active_candidates", {})
+    if not active:
+        return "Belum ada kandidat aktif."
+    items = sorted(active.values(), key=lambda x: x.get("rank", 999))
+    lines = ["STATUS KANDIDAT AKTIF", ""]
+    for item in items[:12]:
+        lines.append(f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}")
     return "\n".join(lines)
+
+def should_run_scan():
+    now = datetime.now()
+    if now.minute % SCAN_INTERVAL_MINUTES != 0:
+        return None
+    return now.strftime("%Y-%m-%d %H:%M")
 
 def try_autoscan():
     global state, chat_id_global
     if not chat_id_global or not state.get("autoscan"):
         return
-    now = datetime.now()
-    if now.minute not in [0, 15, 30, 45]:
+    minute_key = should_run_scan()
+    if minute_key is None:
         return
-    minute_key = now.strftime("%Y-%m-%d %H:%M")
     if state.get("last_scan_minute_key") == minute_key:
         return
-    scan_text = build_scan_text()
-    if scan_text != state.get("last_sent_text", ""):
-        send_message(chat_id_global, scan_text)
-        state["last_sent_text"] = scan_text
+    process_event_driven_scan()
     state["last_scan_minute_key"] = minute_key
     save_state()
 
@@ -501,27 +505,30 @@ def handle_command(chat_id, text):
     global chat_id_global, state, WATCHLIST
     cmd = text.strip().lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FINAL PRO V14 aktif.\n\nCommand:\n/watchlist\n/scan\n/autoscanon\n/autoscanoff\n/statusauto\n/reloadwatchlist")
+        send_message(chat_id, "Entry Bot V15 event-driven aktif.\n\nCommand:\n/watchlist\n/scan\n/autoscanon\n/autoscanoff\n/statusauto\n/statuskandidat\n/reloadwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
         return
     if cmd == "/scan":
-        send_message(chat_id, "Sedang scan FINAL PRO V14...")
-        send_message(chat_id, build_scan_text())
+        process_event_driven_scan()
+        send_message(chat_id, build_status_text())
         return
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan FINAL PRO V14 diaktifkan.")
+        send_message(chat_id, "Autoscan V15 diaktifkan. Scan setiap 5 menit, notifikasi hanya saat ada perubahan penting.")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
         save_state()
-        send_message(chat_id, "Autoscan FINAL PRO V14 dimatikan.")
+        send_message(chat_id, "Autoscan V15 dimatikan.")
         return
     if cmd == "/statusauto":
         send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
+        return
+    if cmd == "/statuskandidat":
+        send_message(chat_id, build_status_text())
         return
     if cmd == "/reloadwatchlist":
         WATCHLIST = load_watchlist()
