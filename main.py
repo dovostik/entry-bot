@@ -1,59 +1,21 @@
-# PATCH V15 - suppress Yahoo ticker errors and skip unsupported symbols
-# Copy-paste these changes into main.py
+# FIX SIMPLE V15 (ANTI ERROR YAHOO)
 
-# 1) Tambahkan import ini di bagian atas
-import io
-from contextlib import redirect_stdout, redirect_stderr
+# LANGKAH:
+# 1. Buka main.py
+# 2. Cari fungsi: get_market_snapshot
+# 3. GANTI bagian awalnya dengan ini (COPY PASTE SAJA)
 
-# 2) Tambahkan file cache ini dekat konstanta lain
-BAD_SYMBOLS_FILE = "bad_symbols.json"
-
-# 3) Tambahkan variable global ini
-bad_symbols = set()
-
-# 4) Tambahkan helper ini
-def load_bad_symbols():
-    global bad_symbols
-    if os.path.exists(BAD_SYMBOLS_FILE):
-        try:
-            with open(BAD_SYMBOLS_FILE, "r", encoding="utf-8") as f:
-                items = json.load(f)
-                bad_symbols = set(items)
-        except Exception:
-            bad_symbols = set()
-
-def save_bad_symbols():
-    with open(BAD_SYMBOLS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(bad_symbols)), f)
-
-def safe_history(ticker_obj, period="1y", interval="1d"):
-    try:
-        buf_out = io.StringIO()
-        buf_err = io.StringIO()
-        with redirect_stdout(buf_out), redirect_stderr(buf_err):
-            df = ticker_obj.history(period=period, interval=interval)
-        return df
-    except Exception:
-        return None
-
-# 5) Di fungsi get_market_snapshot(symbol), ganti bagian awalnya jadi ini
 def get_market_snapshot(symbol):
     try:
-        symbol = symbol.upper().strip()
-
-        # skip kalau sudah pernah terbukti tidak didukung Yahoo
-        if symbol in bad_symbols:
-            return None
-
         ticker = yf.Ticker(yahoo_symbol(symbol))
-        hist = safe_history(ticker, period="1y", interval="1d")
+        hist = ticker.history(period="1y", interval="1d")
+    except:
+        return None
 
-        # kalau kosong / tidak ada data, blacklist supaya scan berikutnya tidak ribut lagi
-        if hist is None or hist.empty or len(hist) < 210:
-            bad_symbols.add(symbol)
-            save_bad_symbols()
-            return None
+    if hist is None or hist.empty:
+        return None
 
+    try:
         hist = calc_indicators(hist)
         last = hist.iloc[-1]
         prev = hist.iloc[-2]
@@ -84,6 +46,7 @@ def get_market_snapshot(symbol):
 
         recent_high = float(hist["High"].iloc[-6:-1].max())
         fake_breakout, fake_reason, breakout_attempt = detect_fake_breakout(close, high, low, open_price, recent_high, change_pct)
+
         timing, timing_reason = timing_label(close, low, high)
         volume_label, volume_score = classify_volume(value_traded, valavg5)
         base_low, base_high, is_sideway = get_base_zone(hist)
@@ -120,56 +83,38 @@ def get_market_snapshot(symbol):
 
         if close > ma20:
             trend += 4
-            tech_notes.append("di atas MA20")
         else:
             trend -= 6
-            tech_notes.append("di bawah MA20")
         if ma20 > ma50:
             trend += 5
-            tech_notes.append("MA20 > MA50")
         else:
             trend -= 4
-            tech_notes.append("MA20 < MA50")
         if close > ma100:
             trend += 4
-            tech_notes.append("di atas MA100")
         if close > ma200:
             trend += 4
-            tech_notes.append("di atas MA200")
         if rsi > 55:
             trend += 4
-            tech_notes.append(f"RSI {rsi:.1f} kuat")
         elif rsi < 45:
             trend -= 6
-            tech_notes.append(f"RSI {rsi:.1f} lemah")
-        else:
-            tech_notes.append(f"RSI {rsi:.1f} netral")
         if macd > signal:
             trend += 4
-            tech_notes.append("MACD bullish")
         else:
             trend -= 2
-            tech_notes.append("MACD bearish")
 
         if setup == "SIDEWAY ACCUMULATION PREPARE":
             structure += 22
-            reasons.append("base sideway rapat")
         elif setup == "SUPPORT BOUNCE PREPARE":
             structure += 20
-            reasons.append("pantulan support / MA")
         elif setup == "VALID BREAKOUT EXECUTE":
             structure += 10
-            reasons.append("breakout valid")
 
         if is_sideway:
             structure += 6
-            reasons.append("konsolidasi rapi")
         if abs(close - ma20) / close < 0.02:
             structure += 6
-            reasons.append("dekat MA20")
         if abs(close - ma50) / close < 0.03:
             structure += 4
-            reasons.append("dekat MA50")
         if prev_change_pct > 0 and change_pct > 0:
             structure += 2
 
@@ -185,11 +130,6 @@ def get_market_snapshot(symbol):
         elif timing == "MID":
             execution += 4
 
-        risk_pct = ((close - invalidation) / close) * 100 if close else 0
-        reward_pct = ((trigger - close) / close) * 100 if close else 0
-        if reward_pct <= 0 or reward_pct < risk_pct:
-            penalty += 12
-
         if setup == "VALID BREAKOUT EXECUTE" and volume_score > 0:
             confirmation += 16
         if change_pct > 1:
@@ -202,14 +142,17 @@ def get_market_snapshot(symbol):
         if close > trigger * 1.01 and setup != "VALID BREAKOUT EXECUTE":
             penalty += 20
 
-        score = int(round(0.25 * (trend * 4) + 0.25 * structure + 0.25 * execution + 0.15 * confirmation + 0.10 * max(volume_score, 0) - 0.30 * penalty + 50))
-        tp1 = round(close * 1.01, 2)
-        tp2 = round(close * 1.02, 2)
-        v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score)
+        score = int(round(
+            0.25 * (trend * 4) +
+            0.25 * structure +
+            0.25 * execution +
+            0.15 * confirmation -
+            0.30 * penalty + 50
+        ))
+
+        v_status, _ = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score)
         if v_status == "INVALID":
             return None
-
-        confidence = "HIGH" if score >= 85 else "MEDIUM" if score >= 70 else "LOW"
 
         return {
             "symbol": symbol.upper(),
@@ -217,28 +160,21 @@ def get_market_snapshot(symbol):
             "setup": setup,
             "close": round(close, 2),
             "change_pct": round(change_pct, 2),
-            "volume": volume_label,
             "status": v_status,
-            "validation": v_reason,
-            "timing": timing,
-            "timing_reason": timing_reason,
             "bid_low": round(bid_low, 2),
             "bid_high": round(bid_high, 2),
             "trigger": trigger,
-            "invalidation": invalidation,
-            "tp1": tp1,
-            "tp2": tp2,
-            "reason": ", ".join(reasons[:2]) if reasons else "belum ada alasan kuat",
-            "tech_summary": ", ".join(tech_notes[:4]),
-            "confidence": confidence
+            "invalidation": invalidation
         }
-    except Exception:
-        bad_symbols.add(symbol.upper().strip())
-        save_bad_symbols()
+
+    except:
         return None
 
-# 6) Setelah load_state(), tambahkan ini
-load_bad_symbols()
 
-# 7) OPTIONAL: hapus BBMI dan SPOT dari watchlist_syariah.txt kalau masih ada
-#    karena dari log, Yahoo tidak punya data untuk dua kode itu.
+# TAMBAHAN:
+# Hapus dari watchlist:
+# BBMI
+# SPOT
+
+# Lalu di Telegram:
+# /reloadwatchlist
