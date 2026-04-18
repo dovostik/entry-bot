@@ -1,8 +1,9 @@
-# Entry Bot V16.1 context-aware full script
 import requests
 import time
 import os
 import json
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
 import pandas as pd
 import yfinance as yf
@@ -18,9 +19,11 @@ last_update_id = 0
 CHAT_FILE = "entry_chat.json"
 STATE_FILE = "entry_state.json"
 WATCHLIST_FILE = "watchlist_syariah.txt"
+UNSUPPORTED_SYMBOLS_FILE = "unsupported_symbols.json"
 
 chat_id_global = None
 state = {"autoscan": False, "last_scan_minute_key": "", "active_candidates": {}}
+unsupported_symbols = set()
 
 MIN_VALUE_TRADED = 10000000000
 MIN_DAILY_RANGE_PCT = 2.0
@@ -75,6 +78,31 @@ def load_watchlist():
             result.append(x)
     return result
 
+def load_unsupported_symbols():
+    global unsupported_symbols
+    if os.path.exists(UNSUPPORTED_SYMBOLS_FILE):
+        try:
+            with open(UNSUPPORTED_SYMBOLS_FILE, "r", encoding="utf-8") as f:
+                unsupported_symbols = set(json.load(f))
+        except Exception:
+            unsupported_symbols = set()
+    else:
+        unsupported_symbols = set()
+
+def save_unsupported_symbols():
+    try:
+        with open(UNSUPPORTED_SYMBOLS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(unsupported_symbols)), f)
+    except Exception:
+        pass
+
+def mark_symbol_unsupported(symbol):
+    global unsupported_symbols
+    symbol = symbol.upper().strip()
+    if symbol not in unsupported_symbols:
+        unsupported_symbols.add(symbol)
+        save_unsupported_symbols()
+
 WATCHLIST = load_watchlist()
 
 def send_message(chat_id, text):
@@ -83,6 +111,17 @@ def send_message(chat_id, text):
 def yahoo_symbol(symbol):
     symbol = symbol.upper().strip()
     return symbol if symbol.endswith(".JK") else f"{symbol}.JK"
+
+def safe_yahoo_history(symbol):
+    try:
+        fake_out = io.StringIO()
+        fake_err = io.StringIO()
+        with redirect_stdout(fake_out), redirect_stderr(fake_err):
+            ticker = yf.Ticker(yahoo_symbol(symbol))
+            hist = ticker.history(period="1y", interval="1d")
+        return hist
+    except Exception:
+        return None
 
 def calc_indicators(df):
     out = df.copy()
@@ -179,21 +218,23 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "INVALID", "harga lari tanpa volume"
     if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "WAIT", "counter trend / downtrend, jangan agresif"
-    if range_position > 0.60 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
-        return "WAIT", "harga masih di tengah / atas range"
-    if bid_low <= close <= bid_high and range_position <= 0.60:
-        return "VALID ENTRY", "harga di area eksekusi bawah"
+    if range_position > 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        return "WAIT", "harga masih terlalu tinggi di range"
+    if bid_low <= close <= bid_high and range_position <= 0.65:
+        return "VALID ENTRY", "harga di area eksekusi"
+    if close <= bid_high * 1.01 and range_position <= 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        return "VALID ENTRY", "masih dekat area, boleh cicil kecil"
     if setup in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"] and bid_low <= close <= trigger and volume_score > 0:
         return "VALID ENTRY", "breakout valid / retest sehat"
     return "WAIT", "tunggu area ideal"
 
 def get_market_snapshot(symbol):
-    try:
-        ticker = yf.Ticker(yahoo_symbol(symbol))
-        hist = ticker.history(period="1y", interval="1d")
-    except Exception:
+    symbol = symbol.upper().strip()
+    if symbol in unsupported_symbols:
         return None
+    hist = safe_yahoo_history(symbol)
     if hist is None or hist.empty or len(hist) < 210:
+        mark_symbol_unsupported(symbol)
         return None
     try:
         hist = calc_indicators(hist)
@@ -273,7 +314,7 @@ def get_market_snapshot(symbol):
             return None
         if recent_drop_pct > 8 and is_sideway and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
-        if volume_score < 0 and setup != "SUPPORT BOUNCE PREPARE":
+        if volume_score < -10 and setup != "SUPPORT BOUNCE PREPARE":
             return None
         if rsi > 78 and setup not in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"]:
             return None
@@ -338,7 +379,7 @@ def get_market_snapshot(symbol):
             penalty += 6
         if trend_bias == "neutral":
             penalty += 4
-        if setup == "BREAKOUT RETEST_READY":
+        if setup == "BREAKOUT RETEST READY":
             penalty += 6
         if move_from_base_pct > 3:
             penalty += 8
@@ -357,7 +398,7 @@ def get_market_snapshot(symbol):
         risk_pct = ((close - invalidation) / close) * 100 if close else 0
         reward_pct = ((trigger - close) / close) * 100 if close else 0
         if reward_pct <= 0 or reward_pct < risk_pct:
-            penalty += 10
+            penalty += 5
         score = int(round(0.25 * (trend * 4) + 0.25 * structure + 0.25 * execution + 0.15 * confirmation + 0.10 * max(volume_score, 0) - 0.30 * penalty + 50))
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
@@ -369,6 +410,7 @@ def get_market_snapshot(symbol):
             confidence = "MEDIUM"
         return {"symbol": symbol.upper(), "score": score, "setup": setup, "close": round(close, 2), "change_pct": round(change_pct, 2), "volume": volume_label, "status": v_status, "validation": v_reason, "timing": timing, "timing_reason": timing_reason, "bid_low": round(bid_low, 2), "bid_high": round(bid_high, 2), "trigger": trigger, "invalidation": invalidation, "tp1": tp1, "tp2": tp2, "reason": ", ".join(reasons[:3]) if reasons else "belum ada alasan kuat", "tech_summary": ", ".join(tech_notes[:4]), "confidence": confidence}
     except Exception:
+        mark_symbol_unsupported(symbol)
         return None
 
 def candidate_key(data):
@@ -376,38 +418,67 @@ def candidate_key(data):
 
 def decision_status(data):
     if data["status"] == "VALID ENTRY":
-        return "ACTIVE BID"
+        if data["close"] <= data["bid_high"]:
+            return "ACTIVE BID"
+        return "ACTIVE BID EARLY"
     if data["setup"] == "BREAKOUT RETEST READY":
         return "WAIT RETEST"
     return "WATCH WAIT"
 
 def format_new_candidate(data):
     lines = ["PRIORITAS BARU", "", data["symbol"], f"Status: {decision_status(data)}", f"Setup: {data['setup']}", f"Confidence: {data['confidence']}", f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)", f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}", f"Trigger: {data['trigger']:.2f}", f"Invalidation: {data['invalidation']:.2f}", f"Alasan: {data['reason']}"]
-    return "\n".join(lines)
+    return "
+".join(lines)
 
 def format_cancel_candidate(prev, reason):
-    return "\n".join(["CANCEL BID", "", prev["symbol"], f"Status sebelumnya: {prev.get('decision_status', '-')}", f"Alasan: {reason}"])
+    lines = ["CANCEL BID", "", prev["symbol"], f"Status sebelumnya: {prev.get('decision_status', '-')}", f"Alasan: {reason}"]
+    return "
+".join(lines)
 
 def format_weakening_candidate(prev, new):
-    return "\n".join(["WARNING", "", new["symbol"], f"Status berubah: {prev.get('decision_status', '-')} -> {decision_status(new)}", f"Harga sekarang: {new['close']:.2f}", f"Alasan: {new.get('validation', 'kualitas menurun')}"])
+    lines = ["WARNING", "", new["symbol"], f"Status berubah: {prev.get('decision_status', '-')} -> {decision_status(new)}", f"Harga sekarang: {new['close']:.2f}", f"Alasan: {new.get('validation', 'kualitas menurun')}"]
+    return "
+".join(lines)
+
+def build_unsupported_text():
+    if not unsupported_symbols:
+        return "Belum ada symbol unsupported."
+    items = sorted(list(unsupported_symbols))
+    lines = ["SYMBOL UNSUPPORTED / DELISTING", ""]
+    for s in items[:100]:
+        lines.append(f"- {s}")
+    if len(items) > 100:
+        lines.append("")
+        lines.append(f"... dan {len(items)-100} symbol lain")
+    return "
+".join(lines)
 
 def scan_candidates():
-    valid_pullback, valid_breakout, wait_pullback, wait_breakout = [], [], [], []
+    valid_pullback = []
+    valid_breakout = []
+    wait_pullback = []
+    wait_breakout = []
     for symbol in WATCHLIST:
         data = get_market_snapshot(symbol)
         if not data:
             continue
         if data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
-            (valid_pullback if data["status"] == "VALID ENTRY" else wait_pullback).append(data)
+            if data["status"] == "VALID ENTRY":
+                valid_pullback.append(data)
+            else:
+                wait_pullback.append(data)
         elif data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"]:
-            (valid_breakout if data["status"] == "VALID ENTRY" else wait_breakout).append(data)
+            if data["status"] == "VALID ENTRY":
+                valid_breakout.append(data)
+            else:
+                wait_breakout.append(data)
     valid_pullback.sort(key=lambda x: x["score"], reverse=True)
     valid_breakout.sort(key=lambda x: x["score"], reverse=True)
     wait_pullback.sort(key=lambda x: x["score"], reverse=True)
     wait_breakout.sort(key=lambda x: x["score"], reverse=True)
     selected = valid_pullback[:3] + valid_breakout[:3] + wait_pullback[:3] + wait_breakout[:3]
     selected.sort(key=lambda x: x["score"], reverse=True)
-    return selected
+    return selected[:10]
 
 def process_event_driven_scan():
     global state, chat_id_global
@@ -428,9 +499,9 @@ def process_event_driven_scan():
             new_status = data["decision_status"]
             prev_score = prev.get("score", 0)
             new_score = data["score"]
-            if prev_status == "ACTIVE BID" and new_status != "ACTIVE BID":
+            if prev_status in ["ACTIVE BID", "ACTIVE BID EARLY"] and new_status not in ["ACTIVE BID", "ACTIVE BID EARLY"]:
                 send_message(chat_id_global, format_weakening_candidate(prev, data))
-            elif prev_status != "ACTIVE BID" and new_status == "ACTIVE BID":
+            elif prev_status not in ["ACTIVE BID", "ACTIVE BID EARLY"] and new_status in ["ACTIVE BID", "ACTIVE BID EARLY"]:
                 send_message(chat_id_global, format_new_candidate(data))
             elif new_score < prev_score - 12:
                 send_message(chat_id_global, format_weakening_candidate(prev, data))
@@ -446,11 +517,16 @@ def process_event_driven_scan():
     save_state()
 
 def build_watchlist_text():
-    text = f"Watchlist syariah aktif: {len(WATCHLIST)} saham\n\n"
+    text = f"Watchlist syariah aktif: {len(WATCHLIST)} saham
+
+"
     preview = WATCHLIST[:100]
-    text += "\n".join(f"- {s}" for s in preview)
+    text += "
+".join(f"- {s}" for s in preview)
     if len(WATCHLIST) > 100:
-        text += f"\n\n... dan {len(WATCHLIST)-100} saham lain"
+        text += f"
+
+... dan {len(WATCHLIST)-100} saham lain"
     return text
 
 def build_status_text():
@@ -461,7 +537,19 @@ def build_status_text():
     lines = ["STATUS KANDIDAT AKTIF", ""]
     for item in items[:12]:
         lines.append(f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}")
-    return "\n".join(lines)
+    return "
+".join(lines)
+
+def is_market_open():
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    current = now.strftime("%H:%M")
+    if "09:00" <= current <= "12:00":
+        return True
+    if "13:30" <= current <= "15:15":
+        return True
+    return False
 
 def should_run_scan():
     now = datetime.now()
@@ -471,6 +559,8 @@ def should_run_scan():
 
 def try_autoscan():
     global state, chat_id_global
+    if not is_market_open():
+        return
     if not chat_id_global or not state.get("autoscan"):
         return
     minute_key = should_run_scan()
@@ -486,7 +576,17 @@ def handle_command(chat_id, text):
     global chat_id_global, state, WATCHLIST
     cmd = text.strip().lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot V16.1 context-aware aktif.\n\nCommand:\n/watchlist\n/scan\n/autoscanon\n/autoscanoff\n/statusauto\n/statuskandidat\n/reloadwatchlist")
+        send_message(chat_id, "Entry Bot V16.2 aktif.
+
+Command:
+/watchlist
+/scan
+/autoscanon
+/autoscanoff
+/statusauto
+/statuskandidat
+/listskips
+/reloadwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
@@ -498,18 +598,21 @@ def handle_command(chat_id, text):
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan V16.1 diaktifkan. Scan setiap 5 menit, notifikasi hanya saat ada perubahan penting.")
+        send_message(chat_id, "Autoscan V16.2 diaktifkan. Scan setiap 5 menit saat market buka.")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
         save_state()
-        send_message(chat_id, "Autoscan V16.1 dimatikan.")
+        send_message(chat_id, "Autoscan V16.2 dimatikan.")
         return
     if cmd == "/statusauto":
         send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
         return
     if cmd == "/statuskandidat":
         send_message(chat_id, build_status_text())
+        return
+    if cmd == "/listskips":
+        send_message(chat_id, build_unsupported_text())
         return
     if cmd == "/reloadwatchlist":
         WATCHLIST = load_watchlist()
@@ -519,6 +622,7 @@ def handle_command(chat_id, text):
 
 load_chat()
 load_state()
+load_unsupported_symbols()
 
 while True:
     try:
