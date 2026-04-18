@@ -205,7 +205,7 @@ def build_entry_zone(setup, close, ma20, ma50, base_low, base_high):
         support = min(base_low, ma20, ma50)
         return round(support * 0.998, 2), round(support * 1.004, 2), "support bounce"
     if setup == "VALID_BREAKOUT_EXECUTE":
-        return round(base_high * 0.998, 2), round(base_high * 1.004, 2), "breakout retest"
+        return round(base_high * 0.998, 2), round(base_high * 1.006, 2), "breakout retest"
     if setup == "BREAKOUT RETEST READY":
         return round(base_high * 0.995, 2), round(base_high * 1.002, 2), "retest breakout"
     return round(base_low, 2), round(base_low + ((base_high - base_low) * 0.20), 2), "watch only"
@@ -217,7 +217,7 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "WAIT", "belum aman, tunggu pullback / abaikan"
     if close <= invalidation * 1.002:
         return "INVALID", "harga terlalu dekat invalidation"
-    if close > trigger * 1.02 and volume_score <= 0:
+    if close > trigger * 1.03 and volume_score <= 0:
         return "INVALID", "harga lari tanpa volume"
     if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "WAIT", "counter trend / downtrend, jangan agresif"
@@ -227,8 +227,14 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "VALID ENTRY", "harga di area eksekusi"
     if close <= bid_high * 1.01 and range_position <= 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "VALID ENTRY", "masih dekat area, boleh cicil kecil"
-    if setup in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"] and bid_low <= close <= trigger and volume_score > 0:
-        return "VALID ENTRY", "breakout valid / retest sehat"
+
+    # BREAKOUT AWAL: lebih fleksibel sedikit dari V16.2
+    if setup == "VALID_BREAKOUT_EXECUTE" and volume_score > 0 and close <= trigger * 1.01:
+        return "VALID ENTRY", "breakout valid, masih dekat trigger"
+
+    if setup == "BREAKOUT RETEST READY" and volume_score > 0 and bid_low <= close <= trigger:
+        return "VALID ENTRY", "retest sehat"
+
     return "WAIT", "tunggu area ideal"
 
 def get_market_snapshot(symbol):
@@ -318,10 +324,10 @@ def get_market_snapshot(symbol):
 
         setup = None
         if breakout_attempt and not fake_breakout and volume_score > 0:
-            if move_from_base_pct <= 2.0:
+            if move_from_base_pct <= 2.5:
                 setup = "VALID_BREAKOUT_EXECUTE"
             elif move_from_base_pct <= 5.0:
-                setup = "BREAKOUT RETEST READY"
+                setup = "BREAKOUT RETEST_READY"
             else:
                 setup = "OVEREXTENDED"
         elif strong_accumulation:
@@ -332,6 +338,10 @@ def get_market_snapshot(symbol):
             setup = "WEAK SIDEWAY"
         else:
             return None
+
+        # normalisasi nama setup agar konsisten
+        if setup == "BREAKOUT RETEST_READY":
+            setup = "BREAKOUT RETEST READY"
 
         if setup in ["WEAK SIDEWAY", "OVEREXTENDED"]:
             return None
@@ -422,8 +432,6 @@ def get_market_snapshot(symbol):
         if near_lower_range:
             structure += 6
             reasons.append("posisi dekat support")
-        else:
-            penalty += 8
 
         if volume_score > 0:
             confirmation += 8
@@ -434,24 +442,23 @@ def get_market_snapshot(symbol):
 
         if fake_breakout:
             penalty += 20
-
         if upper_wick_pct > 0.35:
             penalty += 6
-
         if trend_bias == "neutral":
             penalty += 4
-
         if setup == "BREAKOUT RETEST READY":
-            penalty += 6
-
+            penalty += 4
         if move_from_base_pct > 3:
             penalty += 8
 
+        # execution lebih ramah ke breakout awal
         if bid_low <= close <= bid_high and near_lower_range:
             execution += 16
         elif close < bid_low:
             execution += 8
-        elif setup in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"] and close <= trigger:
+        elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.01:
+            execution += 12
+        elif setup == "BREAKOUT RETEST READY" and close <= trigger:
             execution += 10
         else:
             penalty += 6
@@ -519,6 +526,8 @@ def candidate_key(data):
 
 def decision_status(data):
     if data["status"] == "VALID ENTRY":
+        if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
+            return "ACTIVE BID EARLY"
         if data["close"] <= data["bid_high"]:
             return "ACTIVE BID"
         return "ACTIVE BID EARLY"
@@ -706,7 +715,7 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot V16.2 aktif.\n\n"
+            "Entry Bot V16.3 balanced breakout aktif.\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
@@ -729,12 +738,12 @@ def handle_command(chat_id, text):
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan V16.2 diaktifkan. Scan setiap 5 menit saat market buka.")
+        send_message(chat_id, "Autoscan V16.3 diaktifkan. Scan setiap 5 menit saat market buka.")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
         save_state()
-        send_message(chat_id, "Autoscan V16.2 dimatikan.")
+        send_message(chat_id, "Autoscan V16.3 dimatikan.")
         return
     if cmd == "/statusauto":
         send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
@@ -746,7 +755,6 @@ def handle_command(chat_id, text):
         send_message(chat_id, build_unsupported_text())
         return
     if cmd == "/reloadwatchlist":
-        global WATCHLIST
         WATCHLIST = load_watchlist()
         send_message(chat_id, f"Watchlist dimuat ulang. Total: {len(WATCHLIST)} saham.")
         return
