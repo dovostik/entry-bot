@@ -1,3 +1,10 @@
+# FIXED VERSION V16.3b (breakout tolerance improved)
+
+# perubahan utama:
+# close <= trigger * 1.02 (lebih fleksibel dari 1.01)
+
+# gunakan file ini untuk replace main.py sepenuhnya
+
 import requests
 import time
 import os
@@ -229,7 +236,7 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "VALID ENTRY", "masih dekat area, boleh cicil kecil"
 
     # BREAKOUT AWAL: lebih fleksibel sedikit dari V16.2
-    if setup == "VALID_BREAKOUT_EXECUTE" and volume_score > 0 and close <= trigger * 1.01:
+    if setup == "VALID_BREAKOUT_EXECUTE" and volume_score > 0 and close <= trigger * 1.02:
         return "VALID ENTRY", "breakout valid, masih dekat trigger"
 
     if setup == "BREAKOUT RETEST READY" and volume_score > 0 and bid_low <= close <= trigger:
@@ -456,7 +463,7 @@ def get_market_snapshot(symbol):
             execution += 16
         elif close < bid_low:
             execution += 8
-        elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.01:
+        elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.02:
             execution += 12
         elif setup == "BREAKOUT RETEST READY" and close <= trigger:
             execution += 10
