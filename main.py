@@ -1,24 +1,17 @@
-# FIXED VERSION V16.3b (breakout tolerance improved)
-
-# perubahan utama:
-# close <= trigger * 1.02 (lebih fleksibel dari 1.01)
-
-# gunakan file ini untuk replace main.py sepenuhnya
-
 import requests
 import time
 import os
 import json
 import io
 from contextlib import redirect_stdout, redirect_stderr
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     print("TOKEN tidak ditemukan!")
-    exit()
+    raise SystemExit(1)
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
 last_update_id = 0
@@ -27,6 +20,8 @@ CHAT_FILE = "entry_chat.json"
 STATE_FILE = "entry_state.json"
 WATCHLIST_FILE = "watchlist_syariah.txt"
 UNSUPPORTED_SYMBOLS_FILE = "unsupported_symbols.json"
+SIGNAL_JOURNAL_FILE = "signal_journal.json"
+SIGNAL_EVAL_FILE = "signal_evaluations.json"
 
 chat_id_global = None
 state = {"autoscan": False, "last_scan_minute_key": "", "active_candidates": {}}
@@ -37,35 +32,39 @@ MIN_DAILY_RANGE_PCT = 2.0
 MAX_DISTANCE_TO_BID_PCT = 4.0
 SCAN_INTERVAL_MINUTES = 5
 MEMORY_MISS_LIMIT = 2
+EVAL_INTERVALS = [15, 30, 60]
+
+def load_json_file(path, default):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
+    return default
+
+def save_json_file(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
 def load_chat():
     global chat_id_global
-    if os.path.exists(CHAT_FILE):
-        try:
-            with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                chat_id_global = json.load(f).get("chat_id")
-        except Exception:
-            chat_id_global = None
+    data = load_json_file(CHAT_FILE, {})
+    chat_id_global = data.get("chat_id")
 
 def save_chat():
-    with open(CHAT_FILE, "w", encoding="utf-8") as f:
-        json.dump({"chat_id": chat_id_global}, f)
+    save_json_file(CHAT_FILE, {"chat_id": chat_id_global})
 
 def load_state():
     global state
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                state.update(loaded)
-        except Exception:
-            pass
+    loaded = load_json_file(STATE_FILE, {})
+    if isinstance(loaded, dict):
+        state.update(loaded)
     if "active_candidates" not in state:
         state["active_candidates"] = {}
 
 def save_state():
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f)
+    save_json_file(STATE_FILE, state)
 
 def load_watchlist():
     if not os.path.exists(WATCHLIST_FILE):
@@ -87,21 +86,11 @@ def load_watchlist():
 
 def load_unsupported_symbols():
     global unsupported_symbols
-    if os.path.exists(UNSUPPORTED_SYMBOLS_FILE):
-        try:
-            with open(UNSUPPORTED_SYMBOLS_FILE, "r", encoding="utf-8") as f:
-                unsupported_symbols = set(json.load(f))
-        except Exception:
-            unsupported_symbols = set()
-    else:
-        unsupported_symbols = set()
+    data = load_json_file(UNSUPPORTED_SYMBOLS_FILE, [])
+    unsupported_symbols = set(data if isinstance(data, list) else [])
 
 def save_unsupported_symbols():
-    try:
-        with open(UNSUPPORTED_SYMBOLS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(unsupported_symbols)), f)
-    except Exception:
-        pass
+    save_json_file(UNSUPPORTED_SYMBOLS_FILE, sorted(list(unsupported_symbols)))
 
 def mark_symbol_unsupported(symbol):
     global unsupported_symbols
@@ -113,19 +102,22 @@ def mark_symbol_unsupported(symbol):
 WATCHLIST = load_watchlist()
 
 def send_message(chat_id, text):
-    requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=30)
+    try:
+        requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=30)
+    except Exception:
+        pass
 
 def yahoo_symbol(symbol):
     symbol = symbol.upper().strip()
     return symbol if symbol.endswith(".JK") else f"{symbol}.JK"
 
-def safe_yahoo_history(symbol):
+def safe_yahoo_history(symbol, period="1y", interval="1d"):
     try:
         fake_out = io.StringIO()
         fake_err = io.StringIO()
         with redirect_stdout(fake_out), redirect_stderr(fake_err):
             ticker = yf.Ticker(yahoo_symbol(symbol))
-            hist = ticker.history(period="1y", interval="1d")
+            hist = ticker.history(period=period, interval=interval)
         return hist
     except Exception:
         return None
@@ -179,6 +171,7 @@ def detect_fake_breakout(close, high, low, open_price, recent_high, change_pct):
     close_range_pct = (close - low) / day_range
     upper_wick_pct = (high - max(open_price, close)) / day_range
     breakout_attempt = high >= recent_high * 0.995
+
     fake = False
     reason = "-"
     if breakout_attempt and close < recent_high and upper_wick_pct > 0.35:
@@ -234,14 +227,10 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "VALID ENTRY", "harga di area eksekusi"
     if close <= bid_high * 1.01 and range_position <= 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "VALID ENTRY", "masih dekat area, boleh cicil kecil"
-
-    # BREAKOUT AWAL: lebih fleksibel sedikit dari V16.2
     if setup == "VALID_BREAKOUT_EXECUTE" and volume_score > 0 and close <= trigger * 1.02:
         return "VALID ENTRY", "breakout valid, masih dekat trigger"
-
     if setup == "BREAKOUT RETEST READY" and volume_score > 0 and bid_low <= close <= trigger:
         return "VALID ENTRY", "retest sehat"
-
     return "WAIT", "tunggu area ideal"
 
 def get_market_snapshot(symbol):
@@ -334,7 +323,7 @@ def get_market_snapshot(symbol):
             if move_from_base_pct <= 2.5:
                 setup = "VALID_BREAKOUT_EXECUTE"
             elif move_from_base_pct <= 5.0:
-                setup = "BREAKOUT RETEST_READY"
+                setup = "BREAKOUT RETEST READY"
             else:
                 setup = "OVEREXTENDED"
         elif strong_accumulation:
@@ -345,10 +334,6 @@ def get_market_snapshot(symbol):
             setup = "WEAK SIDEWAY"
         else:
             return None
-
-        # normalisasi nama setup agar konsisten
-        if setup == "BREAKOUT RETEST_READY":
-            setup = "BREAKOUT RETEST READY"
 
         if setup in ["WEAK SIDEWAY", "OVEREXTENDED"]:
             return None
@@ -461,18 +446,16 @@ def get_market_snapshot(symbol):
         if move_from_base_pct > 3:
             penalty += 8
 
-        # ranking tweak: breakout awal yang masih di bawah MA50 / MA100 jangan terlalu mudah unggul
         if setup == "VALID_BREAKOUT_EXECUTE" and close < ma50:
             penalty += 4
         if setup == "VALID_BREAKOUT_EXECUTE" and close < ma100:
             penalty += 3
 
-        # execution lebih ramah ke breakout awal
         if bid_low <= close <= bid_high and near_lower_range:
             execution += 16
         elif close < bid_low:
             execution += 8
-        elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.02:
+        elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.01:
             execution += 12
         elif setup == "BREAKOUT RETEST READY" and close <= trigger:
             execution += 10
@@ -600,6 +583,215 @@ def build_unsupported_text():
         lines.append(f"... dan {len(items)-100} symbol lain")
     return "\n".join(lines)
 
+# =========================
+# JURNAL SINYAL OTOMATIS
+# =========================
+
+def load_signal_journal():
+    data = load_json_file(SIGNAL_JOURNAL_FILE, [])
+    return data if isinstance(data, list) else []
+
+def save_signal_journal(data):
+    save_json_file(SIGNAL_JOURNAL_FILE, data)
+
+def load_signal_evals():
+    data = load_json_file(SIGNAL_EVAL_FILE, [])
+    return data if isinstance(data, list) else []
+
+def save_signal_evals(data):
+    save_json_file(SIGNAL_EVAL_FILE, data)
+
+def signal_id(data):
+    now = datetime.now().strftime("%Y-%m-%d_%H:%M")
+    return f"{now}_{data['symbol']}"
+
+def add_signal_to_journal(data):
+    journal = load_signal_journal()
+    sid = signal_id(data)
+    for item in journal:
+        if item.get("id") == sid:
+            return
+    entry = {
+        "id": sid,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "symbol": data["symbol"],
+        "status": decision_status(data),
+        "setup": data["setup"],
+        "close": data["close"],
+        "bid_low": data["bid_low"],
+        "bid_high": data["bid_high"],
+        "trigger": data["trigger"],
+        "invalidation": data["invalidation"],
+        "score": data["score"],
+        "eval_15m": None,
+        "eval_30m": None,
+        "eval_60m": None,
+        "notified_15m": False,
+        "notified_30m": False,
+        "notified_60m": False
+    }
+    journal.append(entry)
+    save_signal_journal(journal)
+
+def get_latest_price(symbol):
+    hist = safe_yahoo_history(symbol, period="5d", interval="5m")
+    if hist is None or hist.empty:
+        hist = safe_yahoo_history(symbol, period="1mo", interval="1d")
+    if hist is None or hist.empty:
+        return None
+    try:
+        return float(hist["Close"].iloc[-1])
+    except Exception:
+        return None
+
+def eval_active_signal(sig, current_price, minutes):
+    base = sig["close"]
+    invalid = sig["invalidation"]
+    change_pct = ((current_price - base) / base) * 100 if base else 0
+    if current_price <= invalid:
+        return {"label": "GAGAL", "pct": round(change_pct, 2), "note": "tembus invalidation"}
+    if change_pct >= 1.0:
+        return {"label": "BENAR", "pct": round(change_pct, 2), "note": "naik minimal 1%"}
+    return {"label": "NETRAL", "pct": round(change_pct, 2), "note": "belum follow-through"}
+
+def eval_wait_retest(sig, current_price, minutes):
+    bid_low = sig["bid_low"]
+    bid_high = sig["bid_high"]
+    invalid = sig["invalidation"]
+    if current_price <= invalid:
+        return {"label": "GAGAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "retest gagal / tembus invalidation"}
+    if bid_low <= current_price <= bid_high:
+        return {"label": "BENAR", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "masuk area retest"}
+    if current_price > sig["trigger"] * 1.03:
+        return {"label": "GAGAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "lari tanpa retest"}
+    return {"label": "NETRAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "belum retest"}
+
+def eval_watch_wait(sig, current_price, minutes):
+    change_pct = ((current_price - sig["close"]) / sig["close"]) * 100 if sig["close"] else 0
+    if change_pct >= 2.0:
+        return {"label": "SALAH", "pct": round(change_pct, 2), "note": "ternyata breakout sehat"}
+    return {"label": "BENAR", "pct": round(change_pct, 2), "note": "memang belum layak entry"}
+
+def evaluate_pending_signals():
+    journal = load_signal_journal()
+    if not journal:
+        return
+    now = datetime.now()
+    changed = False
+    eval_rows = load_signal_evals()
+
+    for sig in journal:
+        try:
+            sig_time = datetime.strptime(sig["time"], "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+
+        current_price = None
+        for mins in EVAL_INTERVALS:
+            key = f"eval_{mins}m"
+            if sig.get(key) is not None:
+                continue
+            if now < sig_time + timedelta(minutes=mins):
+                continue
+            if current_price is None:
+                current_price = get_latest_price(sig["symbol"])
+            if current_price is None:
+                continue
+
+            if sig["status"] in ["ACTIVE BID", "ACTIVE BID EARLY"]:
+                result = eval_active_signal(sig, current_price, mins)
+            elif sig["status"] == "WAIT RETEST":
+                result = eval_wait_retest(sig, current_price, mins)
+            else:
+                result = eval_watch_wait(sig, current_price, mins)
+
+            sig[key] = result
+            eval_rows.append({
+                "id": sig["id"],
+                "symbol": sig["symbol"],
+                "status": sig["status"],
+                "minutes": mins,
+                "result": result["label"],
+                "pct": result["pct"],
+                "note": result["note"],
+                "time_eval": now.strftime("%Y-%m-%d %H:%M")
+            })
+            changed = True
+
+    if changed:
+        save_signal_journal(journal)
+        save_signal_evals(eval_rows)
+
+def build_journal_today_text():
+    journal = load_signal_journal()
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = [x for x in journal if str(x.get("time", "")).startswith(today)]
+    if not rows:
+        return "Belum ada jurnal hari ini."
+    lines = ["JURNAL HARI INI", ""]
+    for sig in rows[:15]:
+        lines.append(sig["symbol"])
+        lines.append(f"Sinyal: {sig['status']}")
+        lines.append(f"Harga awal: {sig['close']:.2f}")
+        for mins in EVAL_INTERVALS:
+            res = sig.get(f"eval_{mins}m")
+            if res is None:
+                lines.append(f"{mins}m: BELUM DIEVALUASI")
+            else:
+                pct = res.get("pct", 0)
+                lines.append(f"{mins}m: {res.get('label')} ({pct:+.2f}%) - {res.get('note')}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+def build_journal_summary_text():
+    evals = load_signal_evals()
+    if not evals:
+        return "Belum ada ringkasan jurnal."
+    total = len(evals)
+    benar = sum(1 for x in evals if x.get("result") == "BENAR")
+    gagal = sum(1 for x in evals if x.get("result") == "GAGAL")
+    netral = sum(1 for x in evals if x.get("result") == "NETRAL")
+    salah = sum(1 for x in evals if x.get("result") == "SALAH")
+    lines = [
+        "RINGKASAN JURNAL",
+        "",
+        f"Total evaluasi: {total}",
+        f"BENAR: {benar}",
+        f"GAGAL: {gagal}",
+        f"NETRAL: {netral}",
+        f"SALAH: {salah}",
+    ]
+    by_status = {}
+    for x in evals:
+        status = x.get("status", "-")
+        by_status.setdefault(status, {"n": 0, "benar": 0})
+        by_status[status]["n"] += 1
+        if x.get("result") == "BENAR":
+            by_status[status]["benar"] += 1
+    lines.append("")
+    lines.append("Win rate per status:")
+    for status, val in by_status.items():
+        rate = (val["benar"] / val["n"] * 100) if val["n"] else 0
+        lines.append(f"- {status}: {rate:.1f}% ({val['benar']}/{val['n']})")
+    return "\n".join(lines)
+
+def build_journal_stock_text(symbol):
+    journal = load_signal_journal()
+    rows = [x for x in journal if x.get("symbol") == symbol.upper()]
+    if not rows:
+        return f"Belum ada jurnal untuk {symbol.upper()}."
+    lines = [f"JURNAL {symbol.upper()}", ""]
+    for sig in rows[-10:]:
+        lines.append(f"{sig['time']} | {sig['status']} | harga {sig['close']:.2f}")
+        for mins in EVAL_INTERVALS:
+            res = sig.get(f"eval_{mins}m")
+            if res is None:
+                lines.append(f"  {mins}m: BELUM")
+            else:
+                lines.append(f"  {mins}m: {res.get('label')} ({res.get('pct', 0):+.2f}%)")
+        lines.append("")
+    return "\n".join(lines).strip()
+
 def scan_candidates():
     valid_pullback = []
     valid_breakout = []
@@ -646,6 +838,7 @@ def process_event_driven_scan():
 
         if prev is None:
             send_message(chat_id_global, format_new_candidate(data))
+            add_signal_to_journal(data)
         else:
             prev_status = prev.get("decision_status")
             new_status = data["decision_status"]
@@ -656,6 +849,7 @@ def process_event_driven_scan():
                 send_message(chat_id_global, format_weakening_candidate(prev, data))
             elif prev_status not in ["ACTIVE BID", "ACTIVE BID EARLY"] and new_status in ["ACTIVE BID", "ACTIVE BID EARLY"]:
                 send_message(chat_id_global, format_new_candidate(data))
+                add_signal_to_journal(data)
             elif new_score < prev_score - 12:
                 send_message(chat_id_global, format_weakening_candidate(prev, data))
 
@@ -683,13 +877,10 @@ def build_status_text():
     active = state.get("active_candidates", {})
     if not active:
         return "Belum ada kandidat aktif."
-
     items = sorted(active.values(), key=lambda x: x.get("rank", 999))
     lines = ["STATUS KANDIDAT AKTIF", ""]
     for item in items[:12]:
-        lines.append(
-            f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}"
-        )
+        lines.append(f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}")
     return "\n".join(lines)
 
 def is_market_open():
@@ -726,12 +917,13 @@ def try_autoscan():
 
 def handle_command(chat_id, text):
     global chat_id_global, state, WATCHLIST
-    cmd = text.strip().lower()
+    raw = text.strip()
+    cmd = raw.lower()
 
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot V16.3c ranking tuned aktif.\n\n"
+            "Entry Bot FULL COMBINED aktif.\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
@@ -740,7 +932,10 @@ def handle_command(chat_id, text):
             "/statusauto\n"
             "/statuskandidat\n"
             "/listskips\n"
-            "/reloadwatchlist"
+            "/reloadwatchlist\n"
+            "/journaltoday\n"
+            "/journalsummary\n"
+            "/journalstock KODE"
         )
         return
 
@@ -754,12 +949,12 @@ def handle_command(chat_id, text):
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan V16.3 diaktifkan. Scan setiap 5 menit saat market buka.")
+        send_message(chat_id, "Autoscan FULL COMBINED diaktifkan. Scan setiap 5 menit saat market buka.")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
         save_state()
-        send_message(chat_id, "Autoscan V16.3 dimatikan.")
+        send_message(chat_id, "Autoscan FULL COMBINED dimatikan.")
         return
     if cmd == "/statusauto":
         send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
@@ -773,6 +968,21 @@ def handle_command(chat_id, text):
     if cmd == "/reloadwatchlist":
         WATCHLIST = load_watchlist()
         send_message(chat_id, f"Watchlist dimuat ulang. Total: {len(WATCHLIST)} saham.")
+        return
+    if cmd == "/journaltoday":
+        evaluate_pending_signals()
+        send_message(chat_id, build_journal_today_text())
+        return
+    if cmd == "/journalsummary":
+        evaluate_pending_signals()
+        send_message(chat_id, build_journal_summary_text())
+        return
+    if cmd.startswith("/journalstock"):
+        parts = raw.split()
+        if len(parts) >= 2:
+            send_message(chat_id, build_journal_stock_text(parts[1]))
+        else:
+            send_message(chat_id, "Gunakan format: /journalstock KODE")
         return
 
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
@@ -793,6 +1003,7 @@ while True:
                 save_chat()
                 handle_command(chat_id, text)
         try_autoscan()
+        evaluate_pending_signals()
         time.sleep(5)
     except Exception as e:
         print("Error:", e)
