@@ -427,18 +427,15 @@ def decision_status(data):
 
 def format_new_candidate(data):
     lines = ["PRIORITAS BARU", "", data["symbol"], f"Status: {decision_status(data)}", f"Setup: {data['setup']}", f"Confidence: {data['confidence']}", f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)", f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}", f"Trigger: {data['trigger']:.2f}", f"Invalidation: {data['invalidation']:.2f}", f"Alasan: {data['reason']}"]
-    return "
-".join(lines)
+    return "\\n".join(lines)
 
 def format_cancel_candidate(prev, reason):
     lines = ["CANCEL BID", "", prev["symbol"], f"Status sebelumnya: {prev.get('decision_status', '-')}", f"Alasan: {reason}"]
-    return "
-".join(lines)
+    return "\\n".join(lines)
 
 def format_weakening_candidate(prev, new):
     lines = ["WARNING", "", new["symbol"], f"Status berubah: {prev.get('decision_status', '-')} -> {decision_status(new)}", f"Harga sekarang: {new['close']:.2f}", f"Alasan: {new.get('validation', 'kualitas menurun')}"]
-    return "
-".join(lines)
+    return "\\n".join(lines)
 
 def build_unsupported_text():
     if not unsupported_symbols:
@@ -516,16 +513,11 @@ def process_event_driven_scan():
     save_state()
 
 def build_watchlist_text():
-    text = f"Watchlist syariah aktif: {len(WATCHLIST)} saham
-
-"
+    text = f"Watchlist syariah aktif: {len(WATCHLIST)} saham\\n\\n"
     preview = WATCHLIST[:100]
-    text += "
-".join(f"- {s}" for s in preview)
+    text += "\\n".join(f"- {s}" for s in preview)
     if len(WATCHLIST) > 100:
-        text += f"
-
-... dan {len(WATCHLIST)-100} saham lain"
+        text += f"\\n\\n... dan {len(WATCHLIST)-100} saham lain"
     return text
 
 def build_status_text():
@@ -574,17 +566,7 @@ def handle_command(chat_id, text):
     global chat_id_global, state, WATCHLIST
     cmd = text.strip().lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot V16.2 aktif.
-
-Command:
-/watchlist
-/scan
-/autoscanon
-/autoscanoff
-/statusauto
-/statuskandidat
-/listskips
-/reloadwatchlist")
+        send_message(chat_id, "Entry Bot V16.2 aktif.\\n\\nCommand:\\n/watchlist\\n/scan\\n/autoscanon\\n/autoscanoff\\n/statusauto\\n/statuskandidat\\n/listskips\\n/reloadwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
