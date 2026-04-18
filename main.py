@@ -429,7 +429,7 @@ def get_market_snapshot(symbol):
             structure += 16
             reasons.append("breakout valid belum terlalu jauh")
         elif setup == "BREAKOUT RETEST READY":
-            structure += 12
+            structure += 15
             reasons.append("breakout sudah jalan, tunggu retest")
 
         if is_sideway:
@@ -444,6 +444,9 @@ def get_market_snapshot(symbol):
             confirmation += 8
             reasons.append("volume mendukung")
 
+        if setup == "BREAKOUT RETEST READY" and trend_bias != "bearish":
+            confirmation += 3
+
         if prev_change_pct > 0 and change_pct > 0:
             confirmation += 2
 
@@ -457,6 +460,12 @@ def get_market_snapshot(symbol):
             penalty += 4
         if move_from_base_pct > 3:
             penalty += 8
+
+        # ranking tweak: breakout awal yang masih di bawah MA50 / MA100 jangan terlalu mudah unggul
+        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma50:
+            penalty += 4
+        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma100:
+            penalty += 3
 
         # execution lebih ramah ke breakout awal
         if bid_low <= close <= bid_high and near_lower_range:
@@ -722,7 +731,7 @@ def handle_command(chat_id, text):
     if cmd == "/start":
         send_message(
             chat_id,
-            "Entry Bot V16.3 balanced breakout aktif.\n\n"
+            "Entry Bot V16.3c ranking tuned aktif.\n\n"
             "Command:\n"
             "/watchlist\n"
             "/scan\n"
