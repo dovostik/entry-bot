@@ -450,8 +450,7 @@ def build_unsupported_text():
     if len(items) > 100:
         lines.append("")
         lines.append(f"... dan {len(items)-100} symbol lain")
-    return "
-".join(lines)
+    return "\\n".join(lines)
 
 def scan_candidates():
     valid_pullback = []
@@ -537,8 +536,7 @@ def build_status_text():
     lines = ["STATUS KANDIDAT AKTIF", ""]
     for item in items[:12]:
         lines.append(f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}")
-    return "
-".join(lines)
+    return "\\n".join(lines)
 
 def is_market_open():
     now = datetime.now()
