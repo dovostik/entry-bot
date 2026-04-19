@@ -234,6 +234,9 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
     if setup == "BREAKOUT_RETEST_READY" and volume_score > 0 and bid_low <= close <= trigger:
         return "VALID ENTRY", "retest sehat"
     if setup == "BREAKOUT_FOLLOW_THROUGH":
+        ma20_gap_pct = ((close - bid_low) / close) * 100 if close else 0
+        if rsi > 78 or ma20_gap_pct > 4.0:
+            return "WAIT", "momentum terlalu panas, tunggu micro pullback"
         if close <= trigger * 1.03 and rsi <= 78 and volume_score >= 0:
             return "VALID ENTRY", "momentum continuation, boleh cicil kecil"
         return "WAIT", "momentum sudah tinggi, tunggu micro pullback"
@@ -320,10 +323,12 @@ def get_market_snapshot(symbol):
             near_lower_range and close >= support and close >= ma20 * 0.99 and rsi >= 45
             and macd >= signal * 0.9 and trend_bias != "bearish"
         )
+        ma20_distance_pct = ((close - ma20) / ma20) * 100 if ma20 else 0
         breakout_follow_through = (
             breakout_attempt and not fake_breakout and volume_score >= 0 and trend_bias == "bullish"
             and close > (base_high if base_high else recent_high) * 1.01
-            and close_range_pct >= 0.72 and 62 <= rsi <= 80 and macd_hist > 0
+            and close_range_pct >= 0.72 and 62 <= rsi <= 78 and macd_hist > 0
+            and change_pct <= 6.5 and ma20_distance_pct <= 8.0
         )
 
         setup = None
@@ -358,6 +363,10 @@ def get_market_snapshot(symbol):
         if volume_score < -10 and setup != "SUPPORT BOUNCE PREPARE":
             return None
         if rsi > 78 and setup not in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
+            return None
+        if setup == "BREAKOUT_FOLLOW_THROUGH" and rsi > 78:
+            return None
+        if setup == "BREAKOUT_FOLLOW_THROUGH" and change_pct > 6.5:
             return None
         if timing == "LATE" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
@@ -498,7 +507,11 @@ def candidate_key(data):
 
 def decision_status(data):
     if data["setup"] == "BREAKOUT_FOLLOW_THROUGH":
-        return "MOMENTUM CONTINUATION" if data["status"] == "VALID ENTRY" else "WATCH MOMENTUM"
+        if data["status"] != "VALID ENTRY":
+            return "WATCH MOMENTUM"
+        if data.get("change_pct", 0) > 6.0:
+            return "OVEREXTENDED MOMENTUM"
+        return "MOMENTUM CONTINUATION"
     if data["status"] == "VALID ENTRY":
         if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
             return "ACTIVE BID EARLY"
@@ -834,7 +847,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text()); return
