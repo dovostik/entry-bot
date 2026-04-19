@@ -726,14 +726,17 @@ def score_pullback_path(data):
         score -= 8
     return score
 
-def format_candidate_block(data, score_name, rank_score):
+def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
+    score_line = f"{score_name}: {rank_score}"
+    if base_rank_score is not None and base_rank_score != rank_score:
+        score_line = f"{score_name}: {rank_score} (base {base_rank_score})"
     return "\n".join([
         data["symbol"],
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
-        f"{score_name}: {rank_score}",
+        score_line,
         f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}",
         f"Trigger: {data['trigger']:.2f}",
         f"Invalidation: {data['invalidation']:.2f}",
@@ -819,14 +822,14 @@ def build_dual_path_text(result):
     lines += ["AUTOSCAN DUA JALUR", "", "TOP BREAKOUT KERAS"]
     if result["breakout"]:
         for i, item in enumerate(result["breakout"], start=1):
-            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Breakout', item['rank_score'])}")
+            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Breakout', item['rank_score'], item.get('base_rank_score'))}")
             lines.append("")
     else:
         lines += ["Tidak ada kandidat breakout.", ""]
     lines.append("TOP PULLBACK SUPPORT")
     if result["pullback"]:
         for i, item in enumerate(result["pullback"], start=1):
-            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Pullback', item['rank_score'])}")
+            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Pullback', item['rank_score'], item.get('base_rank_score'))}")
             lines.append("")
     else:
         lines += ["Tidak ada kandidat pullback.", ""]
@@ -997,25 +1000,78 @@ def build_journal_stock_text(symbol):
         lines.append("")
     return "\n".join(lines).strip()
 
+
+def apply_market_regime_bonus(data, base_score, path_type, regime_label):
+    score = int(base_score)
+
+    if regime_label == "BREAKOUT_FRIENDLY":
+        if path_type == "breakout":
+            score += 5
+        elif path_type == "pullback":
+            score -= 1
+    elif regime_label == "PULLBACK_FRIENDLY":
+        if path_type == "pullback":
+            score += 5
+        elif path_type == "breakout":
+            score -= 1
+    elif regime_label == "WEAK_MARKET":
+        if decision_status(data) in ["ACTIVE BID EARLY", "MOMENTUM CONTINUATION"]:
+            score -= 5
+        elif path_type == "breakout":
+            score -= 3
+        elif path_type == "pullback":
+            score -= 1
+
+    return score
+
 def scan_dual_path():
     breakout_candidates, pullback_candidates, combined = [], [], []
+    raw_breakout = []
+    raw_pullback = []
+
     for symbol in WATCHLIST:
         data = get_market_snapshot(symbol)
         if not data:
             continue
+
         if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
-            breakout_candidates.append({"data": data, "rank_score": score_breakout_path(data)})
+            raw_breakout.append(data)
         elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
-            pullback_candidates.append({"data": data, "rank_score": score_pullback_path(data)})
+            raw_pullback.append(data)
+
         combined.append(data)
 
     regime = detect_market_regime(combined)
+    regime_label = regime.get("label", "MIXED")
+
+    for data in raw_breakout:
+        base_rank = score_breakout_path(data)
+        final_rank = apply_market_regime_bonus(data, base_rank, "breakout", regime_label)
+        breakout_candidates.append({
+            "data": data,
+            "rank_score": final_rank,
+            "base_rank_score": base_rank
+        })
+
+    for data in raw_pullback:
+        base_rank = score_pullback_path(data)
+        final_rank = apply_market_regime_bonus(data, base_rank, "pullback", regime_label)
+        pullback_candidates.append({
+            "data": data,
+            "rank_score": final_rank,
+            "base_rank_score": base_rank
+        })
 
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     combined.sort(key=lambda x: (action_priority(x), x["score"]), reverse=True)
 
-    return {"breakout": breakout_candidates[:TOP_PER_PATH], "pullback": pullback_candidates[:TOP_PER_PATH], "combined": combined[:TOP_COMBINED], "market_regime": regime}
+    return {
+        "breakout": breakout_candidates[:TOP_PER_PATH],
+        "pullback": pullback_candidates[:TOP_PER_PATH],
+        "combined": combined[:TOP_COMBINED],
+        "market_regime": regime
+    }
 
 def sync_active_candidates_from_combined(combined):
     prev_map = state.get("active_candidates", {})
@@ -1110,7 +1166,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 2 FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 3 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
