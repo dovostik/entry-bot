@@ -296,6 +296,7 @@ def get_regime_snapshot(symbol):
         ma50 = float(last["MA50"]) if pd.notna(last["MA50"]) else close
         rsi = float(last["RSI"]) if pd.notna(last["RSI"]) else 50.0
         macd_hist = float(last["MACD_HIST"]) if pd.notna(last["MACD_HIST"]) else 0.0
+
         volume_today = float(last["Volume"])
         value_traded = float(last["VALUE_TRADED"]) if pd.notna(last["VALUE_TRADED"]) else close * volume_today
         valavg5 = float(last["VALAVG5"]) if pd.notna(last["VALAVG5"]) else value_traded
@@ -739,26 +740,47 @@ def format_candidate_block(data, score_name, rank_score):
         f"Alasan: {data['reason']}"
     ])
 
-def detect_market_regime(scanned_data):
-    total = len(scanned_data)
-    if total == 0:
-        return {"label": "NO_DATA", "bullish_ma20_pct": 0.0, "bullish_ma50_pct": 0.0, "momentum_pct": 0.0, "expansion_pct": 0.0, "breakout_count": 0, "pullback_count": 0}
+def detect_market_regime(scanned_data=None):
+    regime_data = []
+    for symbol in WATCHLIST:
+        snap = get_regime_snapshot(symbol)
+        if snap:
+            regime_data.append(snap)
 
-    bullish_ma20 = sum(1 for d in scanned_data if d["close"] > d.get("ma20", d["close"]))
-    bullish_ma50 = sum(1 for d in scanned_data if d["close"] > d.get("ma50", d["close"]))
-    momentum = sum(1 for d in scanned_data if d.get("rsi", 50) > 50 and d.get("macd_hist", 0) > 0)
-    expansion = sum(1 for d in scanned_data if d.get("change_pct", 0) > 1 and d.get("volume") == "Kuat")
-    breakout_count = sum(1 for d in scanned_data if d["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"])
-    pullback_count = sum(1 for d in scanned_data if d["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"])
+    total = len(regime_data)
+    if total == 0:
+        return {
+            "label": "NO_DATA",
+            "sample_size": 0,
+            "bullish_ma20_pct": 0.0,
+            "bullish_ma50_pct": 0.0,
+            "momentum_pct": 0.0,
+            "expansion_pct": 0.0,
+            "breakout_count": 0,
+            "pullback_count": 0,
+        }
+
+    bullish_ma20 = sum(1 for d in regime_data if d["close"] > d["ma20"])
+    bullish_ma50 = sum(1 for d in regime_data if d["close"] > d["ma50"])
+    momentum = sum(1 for d in regime_data if d["rsi"] > 50 and d["macd_hist"] > 0)
+    expansion = sum(1 for d in regime_data if d["change_pct"] > 1 and d["volume"] == "Kuat")
+
+    candidate_data = scanned_data or []
+    breakout_count = sum(1 for d in candidate_data if d["setup"] in [
+        "VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"
+    ])
+    pullback_count = sum(1 for d in candidate_data if d["setup"] in [
+        "SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"
+    ])
 
     bullish_ma20_pct = bullish_ma20 / total * 100
     bullish_ma50_pct = bullish_ma50 / total * 100
     momentum_pct = momentum / total * 100
     expansion_pct = expansion / total * 100
 
-    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 15 and breakout_count > pullback_count:
+    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12 and breakout_count >= pullback_count:
         label = "BREAKOUT_FRIENDLY"
-    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 15 and pullback_count >= breakout_count:
+    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12 and pullback_count >= breakout_count:
         label = "PULLBACK_FRIENDLY"
     elif bullish_ma20_pct < 40 and momentum_pct < 35:
         label = "WEAK_MARKET"
@@ -767,12 +789,13 @@ def detect_market_regime(scanned_data):
 
     return {
         "label": label,
+        "sample_size": total,
         "bullish_ma20_pct": round(bullish_ma20_pct, 1),
         "bullish_ma50_pct": round(bullish_ma50_pct, 1),
         "momentum_pct": round(momentum_pct, 1),
         "expansion_pct": round(expansion_pct, 1),
         "breakout_count": breakout_count,
-        "pullback_count": pullback_count
+        "pullback_count": pullback_count,
     }
 
 def build_market_regime_header(regime):
@@ -1087,7 +1110,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 2 FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
