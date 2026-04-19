@@ -486,7 +486,7 @@ def get_market_snapshot(symbol):
             structure += 6; reasons.append("posisi dekat support")
         if volume_score > 0:
             confirmation += 8; reasons.append("volume mendukung")
-        if micro_breakout:
+        if micro_breakout and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             confirmation += 6; reasons.append("micro breakout terdeteksi")
         if setup == "BREAKOUT_RETEST_READY" and trend_bias != "bearish":
             confirmation += 3
@@ -932,7 +932,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE + AUTO UPGRADE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE + AUTO UPGRADE CLEANUP aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text()); return
