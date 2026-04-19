@@ -924,87 +924,6 @@ def build_unsupported_text():
         lines += ["", f"... dan {len(items)-100} symbol lain"]
     return "\n".join(lines)
 
-
-
-def build_dashboard_status_all():
-    evals = load_signal_evals()
-    if not evals:
-        return "Belum ada data dashboard status."
-    statuses = sorted(set(x.get("status", "-") for x in evals))
-    lines = ["DASHBOARD STATUS BOT", ""]
-    for status in statuses:
-        rows = [x for x in evals if x.get("status") == status]
-        lines.append(status)
-        lines.append(f"- Total evaluasi: {len(rows)}")
-        for mins in EVAL_INTERVALS:
-            subset = [x for x in rows if x.get("minutes") == mins]
-            if not subset:
-                continue
-            benar = sum(1 for x in subset if x.get("result") == "BENAR")
-            gagal = sum(1 for x in subset if x.get("result") == "GAGAL")
-            netral = sum(1 for x in subset if x.get("result") == "NETRAL")
-            salah = sum(1 for x in subset if x.get("result") == "SALAH")
-            avg_pct = sum(float(x.get("pct", 0)) for x in subset) / len(subset)
-            valid_den = benar + gagal + netral
-            win_rate = (benar / valid_den * 100) if valid_den else 0
-            lines.append(f"- {mins}m: BENAR {benar} | GAGAL {gagal} | NETRAL {netral} | SALAH {salah} | Avg {avg_pct:+.2f}% | Win {win_rate:.1f}%")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-def build_dashboard_status_detail(status_name):
-    evals = load_signal_evals()
-    if not evals:
-        return "Belum ada data dashboard status."
-    status_name = status_name.strip().upper()
-    rows = [x for x in evals if str(x.get("status", "")).upper() == status_name]
-    if not rows:
-        return f"Belum ada data untuk status {status_name}."
-    lines = [f"DASHBOARD {status_name}", "", f"Total evaluasi: {len(rows)}"]
-    final_benar = 0
-    final_total = 0
-    for mins in EVAL_INTERVALS:
-        subset = [x for x in rows if x.get("minutes") == mins]
-        benar = sum(1 for x in subset if x.get("result") == "BENAR")
-        gagal = sum(1 for x in subset if x.get("result") == "GAGAL")
-        netral = sum(1 for x in subset if x.get("result") == "NETRAL")
-        salah = sum(1 for x in subset if x.get("result") == "SALAH")
-        avg_pct = (sum(float(x.get("pct", 0)) for x in subset) / len(subset)) if subset else 0
-        lines.append(f"{mins}m:")
-        lines.append(f"- BENAR: {benar}")
-        lines.append(f"- GAGAL: {gagal}")
-        lines.append(f"- NETRAL: {netral}")
-        lines.append(f"- SALAH: {salah}")
-        lines.append(f"- Avg move: {avg_pct:+.2f}%")
-        lines.append("")
-        if mins == 60:
-            final_benar = benar
-            final_total = benar + gagal + netral
-    win_rate = (final_benar / final_total * 100) if final_total else 0
-    lines.append(f"Win rate final: {win_rate:.1f}%")
-    return "\n".join(lines).strip()
-
-def build_dashboard_ringkas():
-    evals = load_signal_evals()
-    if not evals:
-        return "Belum ada data dashboard ringkas."
-    status_summary = {}
-    for status in set(x.get("status", "-") for x in evals):
-        rows = [x for x in evals if x.get("status") == status and x.get("minutes") == 60]
-        benar = sum(1 for x in rows if x.get("result") == "BENAR")
-        total = sum(1 for x in rows if x.get("result") in ["BENAR", "GAGAL", "NETRAL"])
-        rate = (benar / total * 100) if total else 0
-        status_summary[status] = rate
-    ranked = sorted(status_summary.items(), key=lambda kv: kv[1], reverse=True)
-    lines = ["DASHBOARD RINGKAS", "", "Status terbaik:"]
-    for i, (status, rate) in enumerate(ranked[:3], start=1):
-        lines.append(f"{i}. {status} -> win rate {rate:.1f}%")
-    lines.append("")
-    lines.append("Status terlemah:")
-    for i, (status, rate) in enumerate(sorted(status_summary.items(), key=lambda kv: kv[1])[:3], start=1):
-        lines.append(f"{i}. {status} -> win rate {rate:.1f}%")
-    return "\n".join(lines).strip()
-
-
 def is_market_open():
     now = datetime.now()
     if now.weekday() >= 5:
@@ -1033,10 +952,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE + AUTO UPGRADE CLEANUP aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE
-/dashboardstatus
-/dashboardringkas
-/dashboardstatus NAMA_STATUS")
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE + AUTO UPGRADE CLEANUP aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text()); return
@@ -1066,10 +982,7 @@ def handle_command(chat_id, text):
         send_message(chat_id, build_journal_summary_text()); return
     if cmd.startswith("/journalstock"):
         parts = raw.split()
-        send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE
-/dashboardstatus
-/dashboardringkas
-/dashboardstatus NAMA_STATUS"); return
+        send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE"); return
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
 
 load_chat()
@@ -1093,3 +1006,4 @@ while True:
     except Exception as e:
         print("Error:", e)
         time.sleep(5)
+
