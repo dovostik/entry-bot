@@ -431,7 +431,10 @@ def get_market_snapshot(symbol):
             return None
 
         bid_low, bid_high, _ = build_entry_zone(setup, close, ma20, ma50, base_low, base_high)
+        short_term_high = float(hist["High"].iloc[-4:-1].max()) if len(hist) >= 4 else (base_high if base_high else close)
         trigger = round((base_high if base_high else close) * 1.003, 2)
+        if setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
+            trigger = round(short_term_high * 1.001, 2)
         if setup == "BREAKOUT_FOLLOW_THROUGH":
             trigger = round(close * 1.003, 2)
         invalidation = round((bid_low if bid_low else close) * 0.992, 2)
@@ -587,23 +590,40 @@ def decision_status(data):
         if data.get("change_pct", 0) > 6.0:
             return "OVEREXTENDED MOMENTUM"
         return "MOMENTUM CONTINUATION"
+
+    if data["setup"] == "PULLBACK_IDEAL":
+        return "ACTIVE BID PULLBACK" if data["status"] == "VALID ENTRY" else "WATCH PULLBACK"
+
+    if data["setup"] == "PULLBACK_DEEP":
+        return "ACTIVE BID PULLBACK" if data["status"] == "VALID ENTRY" else "WATCH DEEP PULLBACK"
+
     if data["status"] == "VALID ENTRY":
         if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
             return "ACTIVE BID EARLY"
-        if data["setup"] == "PULLBACK_IDEAL":
-            if data.get("micro_breakout"):
-                return "ACTIVE BID PULLBACK"
-            return "ACTIVE BID PULLBACK"
-        if data["setup"] == "PULLBACK_DEEP":
-            if data.get("micro_breakout"):
-                return "ACTIVE BID PULLBACK"
-            return "WATCH DEEP PULLBACK"
         if data["close"] <= data["bid_high"]:
             return "ACTIVE BID"
         return "ACTIVE BID EARLY"
+
     if data["setup"] == "BREAKOUT_RETEST_READY":
         return "WAIT RETEST"
+
     return "WATCH WAIT"
+
+def action_priority(data):
+    status = decision_status(data)
+    priority_map = {
+        "ACTIVE BID PULLBACK": 9,
+        "ACTIVE BID": 8,
+        "ACTIVE BID EARLY": 7,
+        "MOMENTUM CONTINUATION": 6,
+        "WAIT RETEST": 5,
+        "WATCH PULLBACK": 4,
+        "WATCH DEEP PULLBACK": 3,
+        "WATCH WAIT": 2,
+        "WATCH MOMENTUM": 1,
+        "OVEREXTENDED MOMENTUM": 0,
+    }
+    return priority_map.get(status, 0)
 
 def score_breakout_path(data):
     score = int(data.get("score", 0))
@@ -836,7 +856,7 @@ def scan_dual_path():
         combined.append(data)
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
-    combined.sort(key=lambda x: x["score"], reverse=True)
+    combined.sort(key=lambda x: (action_priority(x), x["score"]), reverse=True)
     return {"breakout": breakout_candidates[:TOP_PER_PATH], "pullback": pullback_candidates[:TOP_PER_PATH], "combined": combined[:TOP_COMBINED]}
 
 def sync_active_candidates_from_combined(combined):
@@ -986,3 +1006,4 @@ while True:
     except Exception as e:
         print("Error:", e)
         time.sleep(5)
+
