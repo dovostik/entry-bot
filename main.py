@@ -204,6 +204,12 @@ def build_entry_zone(setup, close, ma20, ma50, base_low, base_high):
     if setup == "SUPPORT BOUNCE PREPARE":
         support = min(base_low, ma20, ma50)
         return round(support * 0.998, 2), round(support * 1.004, 2), "support bounce"
+    if setup == "PULLBACK_IDEAL":
+        ref = ma20 if ma20 else close
+        return round(ref * 0.992, 2), round(ref * 1.006, 2), "pullback ma20"
+    if setup == "PULLBACK_DEEP":
+        ref = ma50 if ma50 else close
+        return round(ref * 0.99, 2), round(ref * 1.01, 2), "pullback ma50"
     if setup == "VALID_BREAKOUT_EXECUTE":
         return round(base_high * 0.998, 2), round(base_high * 1.006, 2), "breakout retest"
     if setup == "BREAKOUT_RETEST_READY":
@@ -225,6 +231,10 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "WAIT", "counter trend / downtrend, jangan agresif"
     if range_position > 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "WAIT", "harga masih terlalu tinggi di range"
+    if setup == "PULLBACK_IDEAL" and bid_low <= close <= bid_high:
+        return "VALID ENTRY", "pullback sehat dekat MA20"
+    if setup == "PULLBACK_DEEP" and bid_low <= close <= bid_high:
+        return "VALID ENTRY", "pullback dalam dekat MA50"
     if bid_low <= close <= bid_high and range_position <= 0.65:
         return "VALID ENTRY", "harga di area eksekusi"
     if close <= bid_high * 1.01 and range_position <= 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
@@ -323,6 +333,24 @@ def get_market_snapshot(symbol):
             near_lower_range and close >= support and close >= ma20 * 0.99 and rsi >= 45
             and macd >= signal * 0.9 and trend_bias != "bearish"
         )
+        pullback_ideal = (
+            trend_bias == "bullish"
+            and pd.notna(ma20)
+            and abs(close - ma20) / ma20 <= 0.03
+            and 48 <= rsi <= 62
+            and close >= ma20 * 0.99
+            and macd_hist >= -2.0
+            and value_traded >= MIN_VALUE_TRADED
+        )
+        pullback_deep = (
+            trend_bias != "bearish"
+            and pd.notna(ma50)
+            and abs(close - ma50) / ma50 <= 0.05
+            and 40 <= rsi <= 58
+            and close >= ma50 * 0.985
+            and macd >= signal * 0.85
+            and value_traded >= MIN_VALUE_TRADED
+        )
         ma20_distance_pct = ((close - ma20) / ma20) * 100 if ma20 else 0
         breakout_follow_through = (
             breakout_attempt and not fake_breakout and volume_score >= 0 and trend_bias == "bullish"
@@ -345,6 +373,10 @@ def get_market_snapshot(symbol):
             setup = "SIDEWAY ACCUMULATION PREPARE"
         elif support_bounce:
             setup = "SUPPORT BOUNCE PREPARE"
+        elif pullback_ideal:
+            setup = "PULLBACK_IDEAL"
+        elif pullback_deep:
+            setup = "PULLBACK_DEEP"
         elif is_sideway:
             setup = "WEAK SIDEWAY"
         else:
@@ -352,9 +384,9 @@ def get_market_snapshot(symbol):
 
         if setup in ["WEAK SIDEWAY", "OVEREXTENDED"]:
             return None
-        if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             return None
-        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             return None
         if bad_sideway and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
@@ -416,6 +448,10 @@ def get_market_snapshot(symbol):
             structure += 15; reasons.append("breakout sudah jalan, tunggu retest")
         elif setup == "BREAKOUT_FOLLOW_THROUGH":
             structure += 18; reasons.append("breakout lanjut tanpa retest, momentum masih jalan")
+        elif setup == "PULLBACK_IDEAL":
+            structure += 17; reasons.append("pullback sehat dekat MA20")
+        elif setup == "PULLBACK_DEEP":
+            structure += 14; reasons.append("pullback dalam dekat MA50")
 
         if is_sideway:
             structure += 4; reasons.append("range rapi")
@@ -449,6 +485,10 @@ def get_market_snapshot(symbol):
             execution += 10
         elif setup == "BREAKOUT_FOLLOW_THROUGH" and close <= trigger * 0.998:
             execution += 9
+        elif setup == "PULLBACK_IDEAL" and close <= bid_high * 1.005:
+            execution += 14
+        elif setup == "PULLBACK_DEEP" and close <= bid_high * 1.005:
+            execution += 12
         else:
             penalty += 6
 
@@ -515,6 +555,10 @@ def decision_status(data):
     if data["status"] == "VALID ENTRY":
         if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
             return "ACTIVE BID EARLY"
+        if data["setup"] == "PULLBACK_IDEAL":
+            return "ACTIVE BID PULLBACK"
+        if data["setup"] == "PULLBACK_DEEP":
+            return "WATCH DEEP PULLBACK"
         if data["close"] <= data["bid_high"]:
             return "ACTIVE BID"
         return "ACTIVE BID EARLY"
@@ -537,7 +581,9 @@ def score_pullback_path(data):
     score = int(data.get("score", 0))
     if data["setup"] == "SIDEWAY ACCUMULATION PREPARE": score += 8
     if data["setup"] == "SUPPORT BOUNCE PREPARE": score += 6
-    if decision_status(data) == "ACTIVE BID": score += 5
+    if data["setup"] == "PULLBACK_IDEAL": score += 12
+    if data["setup"] == "PULLBACK_DEEP": score += 8
+    if decision_status(data) in ["ACTIVE BID", "ACTIVE BID PULLBACK"]: score += 5
     if data["timing"] == "EARLY": score += 3
     if data["trend_bias"] == "bearish": score -= 8
     return score
@@ -746,7 +792,7 @@ def scan_dual_path():
             continue
         if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
             breakout_candidates.append({"data": data, "rank_score": score_breakout_path(data)})
-        elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             pullback_candidates.append({"data": data, "rank_score": score_pullback_path(data)})
         combined.append(data)
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
@@ -847,7 +893,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text()); return
