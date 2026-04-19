@@ -277,6 +277,44 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "WAIT", "momentum sudah tinggi, tunggu micro pullback"
     return "WAIT", "tunggu area ideal"
 
+
+def get_regime_snapshot(symbol):
+    symbol = symbol.upper().strip()
+    if symbol in unsupported_symbols:
+        return None
+    hist = safe_yahoo_history(symbol)
+    if hist is None or hist.empty or len(hist) < 60:
+        return None
+    try:
+        hist = calc_indicators(hist)
+        last = hist.iloc[-1]
+        prev = hist.iloc[-2]
+
+        close = float(last["Close"])
+        prev_close = float(prev["Close"])
+        ma20 = float(last["MA20"]) if pd.notna(last["MA20"]) else close
+        ma50 = float(last["MA50"]) if pd.notna(last["MA50"]) else close
+        rsi = float(last["RSI"]) if pd.notna(last["RSI"]) else 50.0
+        macd_hist = float(last["MACD_HIST"]) if pd.notna(last["MACD_HIST"]) else 0.0
+        volume_today = float(last["Volume"])
+        value_traded = float(last["VALUE_TRADED"]) if pd.notna(last["VALUE_TRADED"]) else close * volume_today
+        valavg5 = float(last["VALAVG5"]) if pd.notna(last["VALAVG5"]) else value_traded
+        change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
+        volume_label, _ = classify_volume(value_traded, valavg5)
+
+        return {
+            "symbol": symbol,
+            "close": close,
+            "ma20": ma20,
+            "ma50": ma50,
+            "rsi": rsi,
+            "macd_hist": macd_hist,
+            "change_pct": change_pct,
+            "volume": volume_label,
+        }
+    except Exception:
+        return None
+
 def get_market_snapshot(symbol):
     symbol = symbol.upper().strip()
     if symbol in unsupported_symbols:
@@ -740,7 +778,9 @@ def detect_market_regime(scanned_data):
 def build_market_regime_header(regime):
     return "\n".join([
         f"MARKET REGIME: {regime['label']}",
+        f"Sample Watchlist: {regime.get('sample_size', 0)} saham",
         f"Breadth MA20: {regime['bullish_ma20_pct']:.1f}%",
+        f"Breadth MA50: {regime['bullish_ma50_pct']:.1f}%",
         f"Momentum: {regime['momentum_pct']:.1f}%",
         f"Expansion: {regime['expansion_pct']:.1f}%",
         f"Breakout vs Pullback: {regime['breakout_count']} vs {regime['pullback_count']}",
@@ -1047,7 +1087,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
