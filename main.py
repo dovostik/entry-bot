@@ -168,6 +168,22 @@ def classify_volume(value_traded, valavg5):
         return "Lemah", -15
     return "Normal", 0
 
+
+def detect_micro_breakout(df):
+    recent = df.iloc[-7:].copy()
+    if recent.empty or len(recent) < 5:
+        return False, 0.0, 0.0
+    last = recent.iloc[-1]
+    prev = recent.iloc[-2]
+    ref_high = float(recent["High"].iloc[:-1].max())
+    breakout = float(last["Close"]) > ref_high * 1.001
+    body = abs(float(last["Close"]) - float(last["Open"]))
+    rng = max(float(last["High"]) - float(last["Low"]), 0.01)
+    body_ratio = body / rng
+    vol_ratio = (float(last["Volume"]) / max(float(recent["Volume"].iloc[:-1].mean()), 1.0))
+    bullish = float(last["Close"]) >= float(prev["Close"])
+    return bool(breakout and bullish), round(body_ratio, 4), round(vol_ratio, 4)
+
 def detect_fake_breakout(close, high, low, open_price, recent_high, change_pct):
     rng = high - low if high > low else 0.01
     close_range_pct = (close - low) / rng
@@ -218,7 +234,7 @@ def build_entry_zone(setup, close, ma20, ma50, base_low, base_high):
         return round(close * 0.985, 2), round(close * 0.993, 2), "micro pullback"
     return round(base_low, 2), round(base_low + (base_high - base_low) * 0.2, 2), "watch only"
 
-def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi):
+def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi, micro_breakout=False, micro_body_ratio=0.0, micro_vol_ratio=0.0):
     if fake_breakout:
         return "INVALID", "indikasi fake breakout"
     if setup in ["WEAK SIDEWAY", "BREAKOUT EXTENDED", "OVEREXTENDED"]:
@@ -231,10 +247,20 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "WAIT", "counter trend / downtrend, jangan agresif"
     if range_position > 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
         return "WAIT", "harga masih terlalu tinggi di range"
-    if setup == "PULLBACK_IDEAL" and bid_low <= close <= bid_high:
-        return "VALID ENTRY", "pullback sehat dekat MA20"
-    if setup == "PULLBACK_DEEP" and bid_low <= close <= bid_high:
-        return "VALID ENTRY", "pullback dalam dekat MA50"
+    if setup == "PULLBACK_IDEAL":
+        if micro_breakout and micro_body_ratio >= 0.45 and micro_vol_ratio >= 1.05:
+            return "VALID ENTRY", "auto upgrade: micro breakout dari base dekat MA20"
+        if bid_low <= close <= bid_high:
+            return "VALID ENTRY", "pullback sehat dekat MA20"
+        return "WAIT", "pullback sehat tapi belum ada trigger naik"
+    if setup == "PULLBACK_DEEP":
+        if micro_breakout and micro_body_ratio >= 0.50 and micro_vol_ratio >= 1.10:
+            return "VALID ENTRY", "auto upgrade: deep pullback mulai mantul"
+        if bid_low <= close <= bid_high:
+            return "VALID ENTRY", "pullback dalam dekat MA50"
+        if close <= bid_high * 1.02 and micro_breakout:
+            return "VALID ENTRY", "auto upgrade: mulai keluar dari area pullback"
+        return "WAIT", "deep pullback masih base, tunggu trigger naik"
     if bid_low <= close <= bid_high and range_position <= 0.65:
         return "VALID ENTRY", "harga di area eksekusi"
     if close <= bid_high * 1.01 and range_position <= 0.65 and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
@@ -292,6 +318,7 @@ def get_market_snapshot(symbol):
 
         recent_high = float(hist["High"].iloc[-6:-1].max())
         recent_low = float(hist["Low"].iloc[-6:-1].min())
+        micro_breakout, micro_body_ratio, micro_vol_ratio = detect_micro_breakout(hist)
 
         fake_breakout, _, breakout_attempt, close_range_pct, upper_wick_pct = detect_fake_breakout(
             close, high, low, open_price, recent_high, change_pct
@@ -459,6 +486,8 @@ def get_market_snapshot(symbol):
             structure += 6; reasons.append("posisi dekat support")
         if volume_score > 0:
             confirmation += 8; reasons.append("volume mendukung")
+        if micro_breakout:
+            confirmation += 6; reasons.append("micro breakout terdeteksi")
         if setup == "BREAKOUT_RETEST_READY" and trend_bias != "bearish":
             confirmation += 3
         if setup == "BREAKOUT_FOLLOW_THROUGH":
@@ -508,7 +537,10 @@ def get_market_snapshot(symbol):
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
 
-        v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi)
+        v_status, v_reason = validation_status(
+            close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup,
+            volume_score, range_position, trend_bias, rsi, micro_breakout, micro_body_ratio, micro_vol_ratio
+        )
         if v_status == "INVALID":
             return None
 
@@ -536,7 +568,10 @@ def get_market_snapshot(symbol):
             "reason": ", ".join(reasons[:3]) if reasons else "belum ada alasan kuat",
             "tech_summary": ", ".join(tech_notes[:4]),
             "confidence": confidence,
-            "trend_bias": trend_bias
+            "trend_bias": trend_bias,
+            "micro_breakout": micro_breakout,
+            "micro_body_ratio": micro_body_ratio,
+            "micro_vol_ratio": micro_vol_ratio
         }
     except Exception:
         mark_symbol_unsupported(symbol)
@@ -556,8 +591,12 @@ def decision_status(data):
         if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
             return "ACTIVE BID EARLY"
         if data["setup"] == "PULLBACK_IDEAL":
+            if data.get("micro_breakout"):
+                return "ACTIVE BID PULLBACK"
             return "ACTIVE BID PULLBACK"
         if data["setup"] == "PULLBACK_DEEP":
+            if data.get("micro_breakout"):
+                return "ACTIVE BID PULLBACK"
             return "WATCH DEEP PULLBACK"
         if data["close"] <= data["bid_high"]:
             return "ACTIVE BID"
@@ -893,7 +932,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM + FILTER PANAS + PULLBACK UPGRADE + AUTO UPGRADE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text()); return
