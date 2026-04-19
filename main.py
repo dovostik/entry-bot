@@ -36,7 +36,6 @@ MIN_VALUE_TRADED = 10000000000
 MIN_DAILY_RANGE_PCT = 2.0
 MAX_DISTANCE_TO_BID_PCT = 4.0
 SCAN_INTERVAL_MINUTES = 5
-MEMORY_MISS_LIMIT = 2
 EVAL_INTERVALS = [15, 30, 60]
 TOP_PER_PATH = 5
 TOP_COMBINED = 10
@@ -56,8 +55,7 @@ def save_json_file(path, data):
 
 def load_chat():
     global chat_id_global
-    data = load_json_file(CHAT_FILE, {})
-    chat_id_global = data.get("chat_id")
+    chat_id_global = load_json_file(CHAT_FILE, {}).get("chat_id")
 
 def save_chat():
     save_json_file(CHAT_FILE, {"chat_id": chat_id_global})
@@ -67,10 +65,8 @@ def load_state():
     loaded = load_json_file(STATE_FILE, {})
     if isinstance(loaded, dict):
         state.update(loaded)
-    if "active_candidates" not in state:
-        state["active_candidates"] = {}
-    if "last_dual_scan_hash" not in state:
-        state["last_dual_scan_hash"] = ""
+    state.setdefault("active_candidates", {})
+    state.setdefault("last_dual_scan_hash", "")
 
 def save_state():
     save_json_file(STATE_FILE, state)
@@ -86,12 +82,12 @@ def load_watchlist():
                 continue
             items.append(code)
     seen = set()
-    result = []
+    out = []
     for x in items:
         if x not in seen:
             seen.add(x)
-            result.append(x)
-    return result
+            out.append(x)
+    return out
 
 def load_unsupported_symbols():
     global unsupported_symbols
@@ -102,7 +98,6 @@ def save_unsupported_symbols():
     save_json_file(UNSUPPORTED_SYMBOLS_FILE, sorted(list(unsupported_symbols)))
 
 def mark_symbol_unsupported(symbol):
-    global unsupported_symbols
     symbol = symbol.upper().strip()
     if symbol not in unsupported_symbols:
         unsupported_symbols.add(symbol)
@@ -126,8 +121,7 @@ def safe_yahoo_history(symbol, period="1y", interval="1d"):
         fake_err = io.StringIO()
         with redirect_stdout(fake_out), redirect_stderr(fake_err):
             ticker = yf.Ticker(yahoo_symbol(symbol))
-            hist = ticker.history(period=period, interval=interval)
-        return hist
+            return ticker.history(period=period, interval=interval)
     except Exception:
         return None
 
@@ -152,17 +146,16 @@ def calc_indicators(df):
     out["SIGNAL"] = out["MACD"].ewm(span=9, adjust=False).mean()
     out["MACD_HIST"] = out["MACD"] - out["SIGNAL"]
 
-    out["VOLAVG5"] = out["Volume"].rolling(5).mean()
     out["VALUE_TRADED"] = out["Close"] * out["Volume"]
     out["VALAVG5"] = out["VALUE_TRADED"].rolling(5).mean()
     return out
 
 def timing_label(close, low, high):
-    day_range = high - low if high > low else 0.01
-    close_range_pct = (close - low) / day_range
-    if close_range_pct < 0.45:
+    rng = high - low if high > low else 0.01
+    pos = (close - low) / rng
+    if pos < 0.45:
         return "EARLY", "masih awal gerakan"
-    elif close_range_pct < 0.72:
+    if pos < 0.72:
         return "MID", "sudah bergerak, masih bisa"
     return "LATE", "sudah tinggi di range"
 
@@ -176,9 +169,9 @@ def classify_volume(value_traded, valavg5):
     return "Normal", 0
 
 def detect_fake_breakout(close, high, low, open_price, recent_high, change_pct):
-    day_range = high - low if high > low else 0.01
-    close_range_pct = (close - low) / day_range
-    upper_wick_pct = (high - max(open_price, close)) / day_range
+    rng = high - low if high > low else 0.01
+    close_range_pct = (close - low) / rng
+    upper_wick_pct = (high - max(open_price, close)) / rng
     breakout_attempt = high >= recent_high * 0.995
     fake = False
     reason = "-"
@@ -199,26 +192,27 @@ def get_base_zone(df):
         return None, None, None
     base_low = float(recent["Low"].min())
     base_high = float(recent["High"].max())
-    base_width_pct = ((base_high - base_low) / base_high) * 100 if base_high else 0
-    is_sideway = base_width_pct <= 6.0
-    return round(base_low, 2), round(base_high, 2), is_sideway
+    width_pct = ((base_high - base_low) / base_high) * 100 if base_high else 0
+    return round(base_low, 2), round(base_high, 2), width_pct <= 6.0
 
 def build_entry_zone(setup, close, ma20, ma50, base_low, base_high):
     if base_low is None or base_high is None:
         return round(close * 0.994, 2), round(close * 0.998, 2), "fallback"
     if setup == "SIDEWAY ACCUMULATION PREPARE":
         width = max(base_high - base_low, 0.01)
-        return round(base_low, 2), round(base_low + (width * 0.25), 2), "base support"
+        return round(base_low, 2), round(base_low + width * 0.25, 2), "base support"
     if setup == "SUPPORT BOUNCE PREPARE":
         support = min(base_low, ma20, ma50)
         return round(support * 0.998, 2), round(support * 1.004, 2), "support bounce"
     if setup == "VALID_BREAKOUT_EXECUTE":
         return round(base_high * 0.998, 2), round(base_high * 1.006, 2), "breakout retest"
-    if setup == "BREAKOUT RETEST READY":
+    if setup == "BREAKOUT_RETEST_READY":
         return round(base_high * 0.995, 2), round(base_high * 1.002, 2), "retest breakout"
-    return round(base_low, 2), round(base_low + ((base_high - base_low) * 0.20), 2), "watch only"
+    if setup == "BREAKOUT_FOLLOW_THROUGH":
+        return round(close * 0.985, 2), round(close * 0.993, 2), "micro pullback"
+    return round(base_low, 2), round(base_low + (base_high - base_low) * 0.2, 2), "watch only"
 
-def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias):
+def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi):
     if fake_breakout:
         return "INVALID", "indikasi fake breakout"
     if setup in ["WEAK SIDEWAY", "BREAKOUT EXTENDED", "OVEREXTENDED"]:
@@ -237,20 +231,22 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "VALID ENTRY", "masih dekat area, boleh cicil kecil"
     if setup == "VALID_BREAKOUT_EXECUTE" and volume_score > 0 and close <= trigger * 1.02:
         return "VALID ENTRY", "breakout valid, masih dekat trigger"
-    if setup == "BREAKOUT RETEST READY" and volume_score > 0 and bid_low <= close <= trigger:
+    if setup == "BREAKOUT_RETEST_READY" and volume_score > 0 and bid_low <= close <= trigger:
         return "VALID ENTRY", "retest sehat"
+    if setup == "BREAKOUT_FOLLOW_THROUGH":
+        if close <= trigger * 1.03 and rsi <= 78 and volume_score >= 0:
+            return "VALID ENTRY", "momentum continuation, boleh cicil kecil"
+        return "WAIT", "momentum sudah tinggi, tunggu micro pullback"
     return "WAIT", "tunggu area ideal"
 
 def get_market_snapshot(symbol):
     symbol = symbol.upper().strip()
     if symbol in unsupported_symbols:
         return None
-
     hist = safe_yahoo_history(symbol)
     if hist is None or hist.empty or len(hist) < 210:
         mark_symbol_unsupported(symbol)
         return None
-
     try:
         hist = calc_indicators(hist)
         last = hist.iloc[-1]
@@ -284,10 +280,9 @@ def get_market_snapshot(symbol):
         recent_high = float(hist["High"].iloc[-6:-1].max())
         recent_low = float(hist["Low"].iloc[-6:-1].min())
 
-        fake_breakout, _, breakout_attempt, _, upper_wick_pct = detect_fake_breakout(
+        fake_breakout, _, breakout_attempt, close_range_pct, upper_wick_pct = detect_fake_breakout(
             close, high, low, open_price, recent_high, change_pct
         )
-
         timing, timing_reason = timing_label(close, low, high)
         volume_label, volume_score = classify_volume(value_traded, valavg5)
         base_low, base_high, is_sideway = get_base_zone(hist)
@@ -325,13 +320,20 @@ def get_market_snapshot(symbol):
             near_lower_range and close >= support and close >= ma20 * 0.99 and rsi >= 45
             and macd >= signal * 0.9 and trend_bias != "bearish"
         )
+        breakout_follow_through = (
+            breakout_attempt and not fake_breakout and volume_score >= 0 and trend_bias == "bullish"
+            and close > (base_high if base_high else recent_high) * 1.01
+            and close_range_pct >= 0.72 and 62 <= rsi <= 80 and macd_hist > 0
+        )
 
         setup = None
         if breakout_attempt and not fake_breakout and volume_score > 0:
             if move_from_base_pct <= 2.5:
                 setup = "VALID_BREAKOUT_EXECUTE"
+            elif breakout_follow_through:
+                setup = "BREAKOUT_FOLLOW_THROUGH"
             elif move_from_base_pct <= 5.0:
-                setup = "BREAKOUT RETEST READY"
+                setup = "BREAKOUT_RETEST_READY"
             else:
                 setup = "OVEREXTENDED"
         elif strong_accumulation:
@@ -355,104 +357,78 @@ def get_market_snapshot(symbol):
             return None
         if volume_score < -10 and setup != "SUPPORT BOUNCE PREPARE":
             return None
-        if rsi > 78 and setup not in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"]:
+        if rsi > 78 and setup not in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
             return None
         if timing == "LATE" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
 
         bid_low, bid_high, _ = build_entry_zone(setup, close, ma20, ma50, base_low, base_high)
         trigger = round((base_high if base_high else close) * 1.003, 2)
+        if setup == "BREAKOUT_FOLLOW_THROUGH":
+            trigger = round(close * 1.003, 2)
         invalidation = round((bid_low if bid_low else close) * 0.992, 2)
 
-        distance_to_bid_pct = ((close - bid_high) / close) * 100 if close > bid_high else 0
-        if distance_to_bid_pct > MAX_DISTANCE_TO_BID_PCT and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        if ((close - bid_high) / close * 100 if close > bid_high else 0) > MAX_DISTANCE_TO_BID_PCT and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
 
-        trend = 0
-        structure = 0
-        execution = 0
-        confirmation = 0
-        penalty = 0
-        reasons = []
-        tech_notes = []
+        trend = structure = execution = confirmation = penalty = 0
+        reasons, tech_notes = [], []
 
         if close > ma20:
-            trend += 3
-            tech_notes.append("di atas MA20")
+            trend += 3; tech_notes.append("di atas MA20")
         else:
-            trend -= 4
-            tech_notes.append("di bawah MA20")
-
+            trend -= 4; tech_notes.append("di bawah MA20")
         if ma20 > ma50:
-            trend += 4
-            tech_notes.append("MA20 > MA50")
+            trend += 4; tech_notes.append("MA20 > MA50")
         else:
-            trend -= 3
-            tech_notes.append("MA20 < MA50")
-
+            trend -= 3; tech_notes.append("MA20 < MA50")
         if close > ma100:
-            trend += 2
-            tech_notes.append("di atas MA100")
+            trend += 2; tech_notes.append("di atas MA100")
         else:
             tech_notes.append("di bawah MA100")
-
         if rsi >= 55:
-            trend += 3
-            tech_notes.append(f"RSI {rsi:.1f} kuat")
+            trend += 3; tech_notes.append(f"RSI {rsi:.1f} kuat")
         elif rsi < 45:
-            trend -= 4
-            tech_notes.append(f"RSI {rsi:.1f} lemah")
+            trend -= 4; tech_notes.append(f"RSI {rsi:.1f} lemah")
         else:
             tech_notes.append(f"RSI {rsi:.1f} netral")
-
         if macd_hist > 0:
-            trend += 3
-            tech_notes.append("MACD menguat")
+            trend += 3; tech_notes.append("MACD menguat")
         else:
-            trend -= 2
-            tech_notes.append("MACD lemah")
+            trend -= 2; tech_notes.append("MACD lemah")
 
         if setup == "SIDEWAY ACCUMULATION PREPARE":
-            structure += 18
-            reasons.append("base sehat dekat bawah range")
+            structure += 18; reasons.append("base sehat dekat bawah range")
         elif setup == "SUPPORT BOUNCE PREPARE":
-            structure += 16
-            reasons.append("pantulan support dekat area bawah")
+            structure += 16; reasons.append("pantulan support dekat area bawah")
         elif setup == "VALID_BREAKOUT_EXECUTE":
-            structure += 16
-            reasons.append("breakout valid belum terlalu jauh")
-        elif setup == "BREAKOUT RETEST READY":
-            structure += 15
-            reasons.append("breakout sudah jalan, tunggu retest")
+            structure += 16; reasons.append("breakout valid belum terlalu jauh")
+        elif setup == "BREAKOUT_RETEST_READY":
+            structure += 15; reasons.append("breakout sudah jalan, tunggu retest")
+        elif setup == "BREAKOUT_FOLLOW_THROUGH":
+            structure += 18; reasons.append("breakout lanjut tanpa retest, momentum masih jalan")
 
         if is_sideway:
-            structure += 4
-            reasons.append("range rapi")
+            structure += 4; reasons.append("range rapi")
         if near_lower_range:
-            structure += 6
-            reasons.append("posisi dekat support")
+            structure += 6; reasons.append("posisi dekat support")
         if volume_score > 0:
-            confirmation += 8
-            reasons.append("volume mendukung")
-        if setup == "BREAKOUT RETEST READY" and trend_bias != "bearish":
+            confirmation += 8; reasons.append("volume mendukung")
+        if setup == "BREAKOUT_RETEST_READY" and trend_bias != "bearish":
             confirmation += 3
+        if setup == "BREAKOUT_FOLLOW_THROUGH":
+            confirmation += 5
         if prev_change_pct > 0 and change_pct > 0:
             confirmation += 2
 
-        if fake_breakout:
-            penalty += 20
-        if upper_wick_pct > 0.35:
-            penalty += 6
-        if trend_bias == "neutral":
-            penalty += 4
-        if setup == "BREAKOUT RETEST READY":
-            penalty += 4
-        if move_from_base_pct > 3:
-            penalty += 8
-        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma50:
-            penalty += 4
-        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma100:
-            penalty += 3
+        if fake_breakout: penalty += 20
+        if upper_wick_pct > 0.35: penalty += 6
+        if trend_bias == "neutral": penalty += 4
+        if setup == "BREAKOUT_RETEST_READY": penalty += 4
+        if move_from_base_pct > 3 and setup != "BREAKOUT_FOLLOW_THROUGH": penalty += 8
+        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma50: penalty += 4
+        if setup == "VALID_BREAKOUT_EXECUTE" and close < ma100: penalty += 3
+        if setup == "BREAKOUT_FOLLOW_THROUGH" and rsi > 76: penalty += 4
 
         if bid_low <= close <= bid_high and near_lower_range:
             execution += 16
@@ -460,8 +436,10 @@ def get_market_snapshot(symbol):
             execution += 8
         elif setup == "VALID_BREAKOUT_EXECUTE" and close <= trigger * 1.01:
             execution += 12
-        elif setup == "BREAKOUT RETEST READY" and close <= trigger:
+        elif setup == "BREAKOUT_RETEST_READY" and close <= trigger:
             execution += 10
+        elif setup == "BREAKOUT_FOLLOW_THROUGH" and close <= trigger * 0.998:
+            execution += 9
         else:
             penalty += 6
 
@@ -469,32 +447,24 @@ def get_market_snapshot(symbol):
             execution += 10
         elif timing == "MID":
             execution += 4
+        elif setup == "BREAKOUT_FOLLOW_THROUGH" and timing == "LATE":
+            execution += 2
 
         risk_pct = ((close - invalidation) / close) * 100 if close else 0
         reward_pct = ((trigger - close) / close) * 100 if close else 0
-        if reward_pct <= 0 or reward_pct < risk_pct:
+        if setup != "BREAKOUT_FOLLOW_THROUGH" and (reward_pct <= 0 or reward_pct < risk_pct):
             penalty += 5
 
-        score = int(round(
-            0.25 * (trend * 4) +
-            0.25 * structure +
-            0.25 * execution +
-            0.15 * confirmation +
-            0.10 * max(volume_score, 0) -
-            0.30 * penalty + 50
-        ))
-
+        score = int(round(0.25 * (trend * 4) + 0.25 * structure + 0.25 * execution + 0.15 * confirmation + 0.10 * max(volume_score, 0) - 0.30 * penalty + 50))
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
 
-        v_status, v_reason = validation_status(
-            close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias
-        )
+        v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi)
         if v_status == "INVALID":
             return None
 
         confidence = "HIGH" if score >= 85 else "MEDIUM" if score >= 70 else "LOW"
-        if setup == "BREAKOUT RETEST READY" and confidence == "LOW":
+        if setup in ["BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"] and confidence == "LOW":
             confidence = "MEDIUM"
 
         return {
@@ -527,49 +497,41 @@ def candidate_key(data):
     return data["symbol"]
 
 def decision_status(data):
+    if data["setup"] == "BREAKOUT_FOLLOW_THROUGH":
+        return "MOMENTUM CONTINUATION" if data["status"] == "VALID ENTRY" else "WATCH MOMENTUM"
     if data["status"] == "VALID ENTRY":
         if data["setup"] == "VALID_BREAKOUT_EXECUTE" and data["close"] > data["bid_high"]:
             return "ACTIVE BID EARLY"
         if data["close"] <= data["bid_high"]:
             return "ACTIVE BID"
         return "ACTIVE BID EARLY"
-    if data["setup"] == "BREAKOUT RETEST READY":
+    if data["setup"] == "BREAKOUT_RETEST_READY":
         return "WAIT RETEST"
     return "WATCH WAIT"
 
 def score_breakout_path(data):
     score = int(data.get("score", 0))
-    if data["setup"] == "VALID_BREAKOUT_EXECUTE":
-        score += 8
-    if data["setup"] == "BREAKOUT RETEST READY":
-        score += 6
-    if data["volume"] == "Kuat":
-        score += 6
-    if decision_status(data) == "ACTIVE BID EARLY":
-        score += 4
-    if data["confidence"] == "MEDIUM":
-        score += 4
-    if data["trend_bias"] == "bearish":
-        score -= 8
+    if data["setup"] == "VALID_BREAKOUT_EXECUTE": score += 8
+    if data["setup"] == "BREAKOUT_RETEST_READY": score += 6
+    if data["setup"] == "BREAKOUT_FOLLOW_THROUGH": score += 10
+    if data["volume"] == "Kuat": score += 6
+    if decision_status(data) in ["ACTIVE BID EARLY", "MOMENTUM CONTINUATION"]: score += 4
+    if data["confidence"] == "MEDIUM": score += 4
+    if data["trend_bias"] == "bearish": score -= 8
     return score
 
 def score_pullback_path(data):
     score = int(data.get("score", 0))
-    if data["setup"] == "SIDEWAY ACCUMULATION PREPARE":
-        score += 8
-    if data["setup"] == "SUPPORT BOUNCE PREPARE":
-        score += 6
-    if decision_status(data) == "ACTIVE BID":
-        score += 5
-    if data["timing"] == "EARLY":
-        score += 3
-    if data["trend_bias"] == "bearish":
-        score -= 8
+    if data["setup"] == "SIDEWAY ACCUMULATION PREPARE": score += 8
+    if data["setup"] == "SUPPORT BOUNCE PREPARE": score += 6
+    if decision_status(data) == "ACTIVE BID": score += 5
+    if data["timing"] == "EARLY": score += 3
+    if data["trend_bias"] == "bearish": score -= 8
     return score
 
 def format_candidate_block(data, score_name, rank_score):
-    lines = [
-        f"{data['symbol']}",
+    return "\n".join([
+        data["symbol"],
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
@@ -579,33 +541,24 @@ def format_candidate_block(data, score_name, rank_score):
         f"Trigger: {data['trigger']:.2f}",
         f"Invalidation: {data['invalidation']:.2f}",
         f"Alasan: {data['reason']}"
-    ]
-    return "\n".join(lines)
+    ])
 
 def build_dual_path_text(result):
-    lines = ["AUTOSCAN DUA JALUR", ""]
-    lines.append("TOP BREAKOUT KERAS")
+    lines = ["AUTOSCAN DUA JALUR", "", "TOP BREAKOUT KERAS"]
     if result["breakout"]:
         for i, item in enumerate(result["breakout"], start=1):
             lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Breakout', item['rank_score'])}")
             lines.append("")
     else:
-        lines.append("Tidak ada kandidat breakout.")
-        lines.append("")
-
+        lines += ["Tidak ada kandidat breakout.", ""]
     lines.append("TOP PULLBACK SUPPORT")
     if result["pullback"]:
         for i, item in enumerate(result["pullback"], start=1):
             lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Pullback', item['rank_score'])}")
             lines.append("")
     else:
-        lines.append("Tidak ada kandidat pullback.")
-        lines.append("")
+        lines += ["Tidak ada kandidat pullback.", ""]
     return "\n".join(lines).strip()
-
-# =========================
-# JURNAL SINYAL OTOMATIS
-# =========================
 
 def load_signal_journal():
     data = load_json_file(SIGNAL_JOURNAL_FILE, [])
@@ -622,16 +575,14 @@ def save_signal_evals(data):
     save_json_file(SIGNAL_EVAL_FILE, data)
 
 def signal_id(data):
-    now = datetime.now().strftime("%Y-%m-%d_%H:%M")
-    return f"{now}_{data['symbol']}"
+    return f"{datetime.now().strftime('%Y-%m-%d_%H:%M')}_{data['symbol']}"
 
 def add_signal_to_journal(data):
     journal = load_signal_journal()
     sid = signal_id(data)
-    for item in journal:
-        if item.get("id") == sid:
-            return
-    entry = {
+    if any(x.get("id") == sid for x in journal):
+        return
+    journal.append({
         "id": sid,
         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "symbol": data["symbol"],
@@ -646,8 +597,7 @@ def add_signal_to_journal(data):
         "eval_15m": None,
         "eval_30m": None,
         "eval_60m": None
-    }
-    journal.append(entry)
+    })
     save_signal_journal(journal)
 
 def get_latest_price(symbol):
@@ -664,30 +614,29 @@ def get_latest_price(symbol):
 def eval_active_signal(sig, current_price):
     base = sig["close"]
     invalid = sig["invalidation"]
-    change_pct = ((current_price - base) / base) * 100 if base else 0
+    pct = ((current_price - base) / base) * 100 if base else 0
     if current_price <= invalid:
-        return {"label": "GAGAL", "pct": round(change_pct, 2), "note": "tembus invalidation"}
-    if change_pct >= 1.0:
-        return {"label": "BENAR", "pct": round(change_pct, 2), "note": "naik minimal 1%"}
-    return {"label": "NETRAL", "pct": round(change_pct, 2), "note": "belum follow-through"}
+        return {"label": "GAGAL", "pct": round(pct, 2), "note": "tembus invalidation"}
+    if pct >= 1.0:
+        return {"label": "BENAR", "pct": round(pct, 2), "note": "naik minimal 1%"}
+    return {"label": "NETRAL", "pct": round(pct, 2), "note": "belum follow-through"}
 
 def eval_wait_retest(sig, current_price):
-    bid_low = sig["bid_low"]
-    bid_high = sig["bid_high"]
-    invalid = sig["invalidation"]
+    bid_low, bid_high, invalid = sig["bid_low"], sig["bid_high"], sig["invalidation"]
+    pct = round(((current_price - sig["close"]) / sig["close"]) * 100, 2)
     if current_price <= invalid:
-        return {"label": "GAGAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "retest gagal / tembus invalidation"}
+        return {"label": "GAGAL", "pct": pct, "note": "retest gagal / tembus invalidation"}
     if bid_low <= current_price <= bid_high:
-        return {"label": "BENAR", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "masuk area retest"}
+        return {"label": "BENAR", "pct": pct, "note": "masuk area retest"}
     if current_price > sig["trigger"] * 1.03:
-        return {"label": "GAGAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "lari tanpa retest"}
-    return {"label": "NETRAL", "pct": round(((current_price - sig["close"]) / sig["close"]) * 100, 2), "note": "belum retest"}
+        return {"label": "GAGAL", "pct": pct, "note": "lari tanpa retest"}
+    return {"label": "NETRAL", "pct": pct, "note": "belum retest"}
 
 def eval_watch_wait(sig, current_price):
-    change_pct = ((current_price - sig["close"]) / sig["close"]) * 100 if sig["close"] else 0
-    if change_pct >= 2.0:
-        return {"label": "SALAH", "pct": round(change_pct, 2), "note": "ternyata breakout sehat"}
-    return {"label": "BENAR", "pct": round(change_pct, 2), "note": "memang belum layak entry"}
+    pct = ((current_price - sig["close"]) / sig["close"]) * 100 if sig["close"] else 0
+    if pct >= 2.0:
+        return {"label": "SALAH", "pct": round(pct, 2), "note": "ternyata breakout sehat"}
+    return {"label": "BENAR", "pct": round(pct, 2), "note": "memang belum layak entry"}
 
 def evaluate_pending_signals():
     journal = load_signal_journal()
@@ -696,45 +645,29 @@ def evaluate_pending_signals():
     now = datetime.now()
     changed = False
     eval_rows = load_signal_evals()
-
     for sig in journal:
         try:
             sig_time = datetime.strptime(sig["time"], "%Y-%m-%d %H:%M")
         except Exception:
             continue
-
         current_price = None
         for mins in EVAL_INTERVALS:
             key = f"eval_{mins}m"
-            if sig.get(key) is not None:
-                continue
-            if now < sig_time + timedelta(minutes=mins):
+            if sig.get(key) is not None or now < sig_time + timedelta(minutes=mins):
                 continue
             if current_price is None:
                 current_price = get_latest_price(sig["symbol"])
             if current_price is None:
                 continue
-
-            if sig["status"] in ["ACTIVE BID", "ACTIVE BID EARLY"]:
+            if sig["status"] in ["ACTIVE BID", "ACTIVE BID EARLY", "MOMENTUM CONTINUATION"]:
                 result = eval_active_signal(sig, current_price)
             elif sig["status"] == "WAIT RETEST":
                 result = eval_wait_retest(sig, current_price)
             else:
                 result = eval_watch_wait(sig, current_price)
-
             sig[key] = result
-            eval_rows.append({
-                "id": sig["id"],
-                "symbol": sig["symbol"],
-                "status": sig["status"],
-                "minutes": mins,
-                "result": result["label"],
-                "pct": result["pct"],
-                "note": result["note"],
-                "time_eval": now.strftime("%Y-%m-%d %H:%M")
-            })
+            eval_rows.append({"id": sig["id"], "symbol": sig["symbol"], "status": sig["status"], "minutes": mins, "result": result["label"], "pct": result["pct"], "note": result["note"], "time_eval": now.strftime("%Y-%m-%d %H:%M")})
             changed = True
-
     if changed:
         save_signal_journal(journal)
         save_signal_evals(eval_rows)
@@ -747,9 +680,7 @@ def build_journal_today_text():
         return "Belum ada jurnal hari ini."
     lines = ["JURNAL HARI INI", ""]
     for sig in rows[:15]:
-        lines.append(sig["symbol"])
-        lines.append(f"Sinyal: {sig['status']}")
-        lines.append(f"Harga awal: {sig['close']:.2f}")
+        lines += [sig["symbol"], f"Sinyal: {sig['status']}", f"Harga awal: {sig['close']:.2f}"]
         for mins in EVAL_INTERVALS:
             res = sig.get(f"eval_{mins}m")
             if res is None:
@@ -768,17 +699,7 @@ def build_journal_summary_text():
     gagal = sum(1 for x in evals if x.get("result") == "GAGAL")
     netral = sum(1 for x in evals if x.get("result") == "NETRAL")
     salah = sum(1 for x in evals if x.get("result") == "SALAH")
-    lines = [
-        "RINGKASAN JURNAL",
-        "",
-        f"Total evaluasi: {total}",
-        f"BENAR: {benar}",
-        f"GAGAL: {gagal}",
-        f"NETRAL: {netral}",
-        f"SALAH: {salah}",
-        "",
-        "Win rate per status:"
-    ]
+    lines = ["RINGKASAN JURNAL", "", f"Total evaluasi: {total}", f"BENAR: {benar}", f"GAGAL: {gagal}", f"NETRAL: {netral}", f"SALAH: {salah}", "", "Win rate per status:"]
     by_status = {}
     for x in evals:
         status = x.get("status", "-")
@@ -792,8 +713,7 @@ def build_journal_summary_text():
     return "\n".join(lines)
 
 def build_journal_stock_text(symbol):
-    journal = load_signal_journal()
-    rows = [x for x in journal if x.get("symbol") == symbol.upper()]
+    rows = [x for x in load_signal_journal() if x.get("symbol") == symbol.upper()]
     if not rows:
         return f"Belum ada jurnal untuk {symbol.upper()}."
     lines = [f"JURNAL {symbol.upper()}", ""]
@@ -801,40 +721,25 @@ def build_journal_stock_text(symbol):
         lines.append(f"{sig['time']} | {sig['status']} | harga {sig['close']:.2f}")
         for mins in EVAL_INTERVALS:
             res = sig.get(f"eval_{mins}m")
-            if res is None:
-                lines.append(f"  {mins}m: BELUM")
-            else:
-                lines.append(f"  {mins}m: {res.get('label')} ({res.get('pct', 0):+.2f}%)")
+            lines.append(f"  {mins}m: BELUM" if res is None else f"  {mins}m: {res.get('label')} ({res.get('pct', 0):+.2f}%)")
         lines.append("")
     return "\n".join(lines).strip()
 
 def scan_dual_path():
-    breakout_candidates = []
-    pullback_candidates = []
-    combined = []
-
+    breakout_candidates, pullback_candidates, combined = [], [], []
     for symbol in WATCHLIST:
         data = get_market_snapshot(symbol)
         if not data:
             continue
-
-        setup = data["setup"]
-        if setup in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT RETEST READY"]:
+        if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
             breakout_candidates.append({"data": data, "rank_score": score_breakout_path(data)})
-        elif setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             pullback_candidates.append({"data": data, "rank_score": score_pullback_path(data)})
-
         combined.append(data)
-
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     combined.sort(key=lambda x: x["score"], reverse=True)
-
-    return {
-        "breakout": breakout_candidates[:TOP_PER_PATH],
-        "pullback": pullback_candidates[:TOP_PER_PATH],
-        "combined": combined[:TOP_COMBINED]
-    }
+    return {"breakout": breakout_candidates[:TOP_PER_PATH], "pullback": pullback_candidates[:TOP_PER_PATH], "combined": combined[:TOP_COMBINED]}
 
 def sync_active_candidates_from_combined(combined):
     prev_map = state.get("active_candidates", {})
@@ -852,14 +757,14 @@ def sync_active_candidates_from_combined(combined):
     save_state()
 
 def dual_scan_hash(result):
-    key_parts = []
+    parts = []
     for item in result["breakout"]:
         d = item["data"]
-        key_parts.append(f"B:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
+        parts.append(f"B:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
     for item in result["pullback"]:
         d = item["data"]
-        key_parts.append(f"P:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
-    return "|".join(key_parts)
+        parts.append(f"P:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
+    return "|".join(parts)
 
 def process_dual_path_scan(notify=False):
     result = scan_dual_path()
@@ -898,85 +803,68 @@ def build_unsupported_text():
     for s in items[:100]:
         lines.append(f"- {s}")
     if len(items) > 100:
-        lines.append("")
-        lines.append(f"... dan {len(items)-100} symbol lain")
+        lines += ["", f"... dan {len(items)-100} symbol lain"]
     return "\n".join(lines)
 
+def is_market_open():
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    current = now.strftime("%H:%M")
+    return ("09:00" <= current <= "12:00") or ("13:30" <= current <= "15:15")
+
+def should_run_scan():
+    now = datetime.now()
+    if now.minute % SCAN_INTERVAL_MINUTES != 0:
+        return None
+    return now.strftime("%Y-%m-%d %H:%M")
+
+def try_autoscan():
+    if not is_market_open() or not chat_id_global or not state.get("autoscan"):
+        return
+    minute_key = should_run_scan()
+    if minute_key is None or state.get("last_scan_minute_key") == minute_key:
+        return
+    process_dual_path_scan(notify=True)
+    state["last_scan_minute_key"] = minute_key
+    save_state()
+
 def handle_command(chat_id, text):
-    global chat_id_global, state, WATCHLIST
+    global chat_id_global, WATCHLIST
     raw = text.strip()
     cmd = raw.lower()
-
     if cmd == "/start":
-        send_message(
-            chat_id,
-            "Entry Bot FULL COMBINED DUA JALUR aktif.\n\n"
-            "Command:\n"
-            "/watchlist\n"
-            "/scan\n"
-            "/scanjalur\n"
-            "/autoscanon\n"
-            "/autoscanoff\n"
-            "/statusauto\n"
-            "/statuskandidat\n"
-            "/listskips\n"
-            "/reloadwatchlist\n"
-            "/journaltoday\n"
-            "/journalsummary\n"
-            "/journalstock KODE"
-        )
+        send_message(chat_id, "Entry Bot FULL COMBINED DUA JALUR + MOMENTUM aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
-
     if cmd == "/watchlist":
-        send_message(chat_id, build_watchlist_text())
-        return
-    if cmd == "/scan":
+        send_message(chat_id, build_watchlist_text()); return
+    if cmd in ["/scan", "/scanjalur"]:
         result = process_dual_path_scan(notify=False)
-        send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text())
-        return
-    if cmd == "/scanjalur":
-        result = process_dual_path_scan(notify=False)
-        send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text())
-        return
+        send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text()); return
     if cmd == "/autoscanon":
-        state["autoscan"] = True
-        save_state()
-        send_message(chat_id, "Autoscan FULL COMBINED DUA JALUR diaktifkan. Scan setiap 5 menit saat market buka.")
-        return
+        state["autoscan"] = True; save_state()
+        send_message(chat_id, "Autoscan FULL COMBINED DUA JALUR + MOMENTUM diaktifkan. Scan setiap 5 menit saat market buka."); return
     if cmd == "/autoscanoff":
-        state["autoscan"] = False
-        save_state()
-        send_message(chat_id, "Autoscan FULL COMBINED DUA JALUR dimatikan.")
-        return
+        state["autoscan"] = False; save_state()
+        send_message(chat_id, "Autoscan FULL COMBINED DUA JALUR + MOMENTUM dimatikan."); return
     if cmd == "/statusauto":
-        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
-        return
+        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}"); return
     if cmd == "/statuskandidat":
-        send_message(chat_id, build_status_text())
-        return
+        send_message(chat_id, build_status_text()); return
     if cmd == "/listskips":
-        send_message(chat_id, build_unsupported_text())
-        return
+        send_message(chat_id, build_unsupported_text()); return
     if cmd == "/reloadwatchlist":
         WATCHLIST = load_watchlist()
-        send_message(chat_id, f"Watchlist dimuat ulang. Total: {len(WATCHLIST)} saham.")
-        return
+        send_message(chat_id, f"Watchlist dimuat ulang. Total: {len(WATCHLIST)} saham."); return
     if cmd == "/journaltoday":
         evaluate_pending_signals()
-        send_message(chat_id, build_journal_today_text())
-        return
+        send_message(chat_id, build_journal_today_text()); return
     if cmd == "/journalsummary":
         evaluate_pending_signals()
-        send_message(chat_id, build_journal_summary_text())
-        return
+        send_message(chat_id, build_journal_summary_text()); return
     if cmd.startswith("/journalstock"):
         parts = raw.split()
-        if len(parts) >= 2:
-            send_message(chat_id, build_journal_stock_text(parts[1]))
-        else:
-            send_message(chat_id, "Gunakan format: /journalstock KODE")
-        return
-
+        send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE"); return
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
 
 load_chat()
