@@ -39,6 +39,8 @@ SCAN_INTERVAL_MINUTES = 5
 EVAL_INTERVALS = [15, 30, 60]
 TOP_PER_PATH = 5
 TOP_COMBINED = 10
+relative_strength_map = {}
+
 
 def load_json_file(path, default):
     if os.path.exists(path):
@@ -644,7 +646,10 @@ def get_market_snapshot(symbol):
             "ma20": round(ma20, 2),
             "ma50": round(ma50, 2),
             "rsi": round(rsi, 2),
-            "macd_hist": round(macd_hist, 4)
+            "macd_hist": round(macd_hist, 4),
+            "rs_label": "N/A",
+            "rs_bonus": 0,
+            "rs_20": 0.0
         }
     except Exception:
         mark_symbol_unsupported(symbol)
@@ -706,6 +711,7 @@ def score_breakout_path(data):
         score += 4
     if data["trend_bias"] == "bearish":
         score -= 8
+    score += int(data.get("rs_bonus", 0))
     return score
 
 def score_pullback_path(data):
@@ -724,6 +730,7 @@ def score_pullback_path(data):
         score += 3
     if data["trend_bias"] == "bearish":
         score -= 8
+    score += int(data.get("rs_bonus", 0))
     return score
 
 def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
@@ -735,6 +742,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
+        f"RS: {data.get('rs_label','N/A')} ({data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
         score_line,
         f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}",
@@ -742,6 +750,44 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Invalidation: {data['invalidation']:.2f}",
         f"Alasan: {data['reason']}"
     ])
+
+
+def update_relative_strength_map(scanned_data):
+    global relative_strength_map
+    rows = []
+    for d in scanned_data:
+        try:
+            hist = safe_yahoo_history(d["symbol"])
+            if hist is None or hist.empty or len(hist) < 25:
+                continue
+            close_now = float(hist["Close"].iloc[-1])
+            close_20 = float(hist["Close"].iloc[-21])
+            ret_20 = ((close_now - close_20) / close_20) * 100 if close_20 else 0.0
+            rows.append((d["symbol"], ret_20))
+        except Exception:
+            continue
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+    n = len(rows)
+    rs_map = {}
+    for idx, (symbol, ret_20) in enumerate(rows):
+        pct_rank = ((n - idx) / n) * 100 if n else 0
+        if pct_rank >= 75:
+            label = "LEADER"
+            bonus = 4
+        elif pct_rank <= 30:
+            label = "LAGGARD"
+            bonus = -3
+        else:
+            label = "AVERAGE"
+            bonus = 0
+        rs_map[symbol] = {
+            "ret_20": round(ret_20, 2),
+            "pct_rank": round(pct_rank, 1),
+            "label": label,
+            "bonus": bonus
+        }
+    relative_strength_map = rs_map
 
 def detect_market_regime(scanned_data=None):
     regime_data = []
@@ -1033,13 +1079,20 @@ def scan_dual_path():
         data = get_market_snapshot(symbol)
         if not data:
             continue
+        combined.append(data)
+
+    update_relative_strength_map(combined)
+
+    for data in combined:
+        rs = relative_strength_map.get(data["symbol"], {})
+        data["rs_label"] = rs.get("label", "N/A")
+        data["rs_bonus"] = rs.get("bonus", 0)
+        data["rs_20"] = rs.get("ret_20", 0.0)
 
         if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
             raw_breakout.append(data)
         elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             raw_pullback.append(data)
-
-        combined.append(data)
 
     regime = detect_market_regime(combined)
     regime_label = regime.get("label", "MIXED")
@@ -1166,7 +1219,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME STAGE 3 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME + RS STAGE 1 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
