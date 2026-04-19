@@ -649,6 +649,7 @@ def get_market_snapshot(symbol):
             "macd_hist": round(macd_hist, 4),
             "rs_label": "N/A",
             "rs_bonus": 0,
+            "rs_5": 0.0,
             "rs_20": 0.0
         }
     except Exception:
@@ -742,7 +743,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
-        f"RS: {data.get('rs_label','N/A')} ({data.get('rs_20',0):+.2f}% /20d)",
+        f"RS: {data.get('rs_label','N/A')} ({data.get('rs_5',0):+.2f}% /5d | {data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
         score_line,
         f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}",
@@ -760,33 +761,70 @@ def update_relative_strength_map(scanned_data):
             hist = safe_yahoo_history(d["symbol"])
             if hist is None or hist.empty or len(hist) < 25:
                 continue
+
             close_now = float(hist["Close"].iloc[-1])
-            close_20 = float(hist["Close"].iloc[-21])
+            close_5 = float(hist["Close"].iloc[-6]) if len(hist) >= 6 else close_now
+            close_20 = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else close_now
+
+            ret_5 = ((close_now - close_5) / close_5) * 100 if close_5 else 0.0
             ret_20 = ((close_now - close_20) / close_20) * 100 if close_20 else 0.0
-            rows.append((d["symbol"], ret_20))
+
+            rows.append({
+                "symbol": d["symbol"],
+                "ret_5": ret_5,
+                "ret_20": ret_20
+            })
         except Exception:
             continue
 
-    rows.sort(key=lambda x: x[1], reverse=True)
+    if not rows:
+        relative_strength_map = {}
+        return
+
+    rows_5 = sorted(rows, key=lambda x: x["ret_5"], reverse=True)
+    rows_20 = sorted(rows, key=lambda x: x["ret_20"], reverse=True)
     n = len(rows)
-    rs_map = {}
-    for idx, (symbol, ret_20) in enumerate(rows):
+
+    rank5 = {}
+    rank20 = {}
+    for idx, row in enumerate(rows_5):
         pct_rank = ((n - idx) / n) * 100 if n else 0
-        if pct_rank >= 75:
-            label = "LEADER"
-            bonus = 4
-        elif pct_rank <= 30:
+        rank5[row["symbol"]] = pct_rank
+    for idx, row in enumerate(rows_20):
+        pct_rank = ((n - idx) / n) * 100 if n else 0
+        rank20[row["symbol"]] = pct_rank
+
+    rs_map = {}
+    for row in rows:
+        symbol = row["symbol"]
+        pct5 = rank5.get(symbol, 50)
+        pct20 = rank20.get(symbol, 50)
+
+        if pct5 >= 75 and pct20 >= 75:
+            label = "LEADER STRONG"
+            bonus = 5
+        elif pct5 >= 75 and pct20 >= 40:
+            label = "EMERGING LEADER"
+            bonus = 3
+        elif pct20 >= 75 and pct5 < 45:
+            label = "PULLBACK LEADER"
+            bonus = 2
+        elif pct5 <= 30 and pct20 <= 30:
             label = "LAGGARD"
-            bonus = -3
+            bonus = -4
         else:
             label = "AVERAGE"
             bonus = 0
+
         rs_map[symbol] = {
-            "ret_20": round(ret_20, 2),
-            "pct_rank": round(pct_rank, 1),
+            "ret_5": round(row["ret_5"], 2),
+            "ret_20": round(row["ret_20"], 2),
+            "pct_rank_5": round(pct5, 1),
+            "pct_rank_20": round(pct20, 1),
             "label": label,
             "bonus": bonus
         }
+
     relative_strength_map = rs_map
 
 def detect_market_regime(scanned_data=None):
@@ -1087,6 +1125,7 @@ def scan_dual_path():
         rs = relative_strength_map.get(data["symbol"], {})
         data["rs_label"] = rs.get("label", "N/A")
         data["rs_bonus"] = rs.get("bonus", 0)
+        data["rs_5"] = rs.get("ret_5", 0.0)
         data["rs_20"] = rs.get("ret_20", 0.0)
 
         if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"]:
@@ -1219,7 +1258,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME + RS STAGE 1 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME + RS STAGE 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
