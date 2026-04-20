@@ -1273,24 +1273,51 @@ def sync_active_candidates_from_combined(combined):
     save_state()
 
 def dual_scan_hash(result):
-    parts = [f"REGIME:{result.get('market_regime', {}).get('label', '')}"]
-    for item in result["breakout"]:
+    parts = []
+
+    regime = result.get("market_regime", {})
+    parts.append(
+        f"REGIME:{regime.get('label','-')}:{regime.get('sample_size',0)}:"
+        f"{regime.get('bullish_ma20_pct',0)}:{regime.get('bullish_ma50_pct',0)}:"
+        f"{regime.get('momentum_pct',0)}:{regime.get('expansion_pct',0)}"
+    )
+
+    for item in result.get("breakout", []):
         d = item["data"]
-        parts.append(f"B:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
-    for item in result["pullback"]:
+        parts.append(
+            f"B:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:"
+            f"{d.get('close',0)}:{d.get('setup','-')}"
+        )
+
+    for item in result.get("pullback", []):
         d = item["data"]
-        parts.append(f"P:{d['symbol']}:{decision_status(d)}:{item['rank_score']}")
+        parts.append(
+            f"P:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:"
+            f"{d.get('close',0)}:{d.get('setup','-')}"
+        )
+
+    for d in result.get("combined", []):
+        parts.append(
+            f"C:{d['symbol']}:{decision_status(d)}:{d.get('score',0)}:"
+            f"{d.get('close',0)}:{d.get('setup','-')}"
+        )
+
     return "|".join(parts)
 
 def process_dual_path_scan(notify=False):
     result = scan_dual_path()
     sync_active_candidates_from_combined(result["combined"])
+
+    digest = dual_scan_hash(result)
+    old_digest = state.get("last_dual_scan_hash", "")
+
     if notify and chat_id_global:
-        digest = dual_scan_hash(result)
-        if digest != state.get("last_dual_scan_hash", ""):
-            send_message(chat_id_global, build_dual_path_text(result) + "\n\n" + build_status_text())
+        if digest != old_digest:
+            msg = build_dual_path_text(result) + "\n\n" + build_status_text()
+            send_message(chat_id_global, msg)
             state["last_dual_scan_hash"] = digest
             save_state()
+
     return result
 
 def build_watchlist_text():
@@ -1336,12 +1363,26 @@ def should_run_scan():
     return now.strftime("%Y-%m-%d %H:%M")
 
 def try_autoscan():
-    if not is_market_open() or not chat_id_global or not state.get("autoscan"):
+    global state
+
+    if not state.get("autoscan"):
         return
+
+    if not is_market_open():
+        return
+
+    if not chat_id_global:
+        return
+
     minute_key = should_run_scan()
-    if minute_key is None or state.get("last_scan_minute_key") == minute_key:
+    if minute_key is None:
         return
+
+    if state.get("last_scan_minute_key") == minute_key:
+        return
+
     process_dual_path_scan(notify=True)
+
     state["last_scan_minute_key"] = minute_key
     save_state()
 
@@ -1350,7 +1391,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + PULLBACK LOOSENING aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + AUTOSCAN FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
