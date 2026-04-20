@@ -1258,8 +1258,40 @@ def dual_scan_hash(result):
         parts.append(f"C:{d['symbol']}:{decision_status(d)}:{d.get('score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     return "|".join(parts)
 
+
+def should_notify_quick_update(prev_active, new_combined, old_digest, new_digest, quick_mode):
+    if new_digest != old_digest:
+        return True
+
+    if not quick_mode:
+        return False
+
+    new_map = {d["symbol"]: d for d in new_combined}
+    for symbol, prev in prev_active.items():
+        new = new_map.get(symbol)
+        if not new:
+            continue
+
+        prev_close = float(prev.get("close", 0) or 0)
+        new_close = float(new.get("close", 0) or 0)
+
+        if prev_close > 0:
+            move_pct = abs((new_close - prev_close) / prev_close) * 100
+            if move_pct >= 0.8:
+                return True
+
+        if prev.get("decision_status") != decision_status(new):
+            return True
+
+        if abs(int(new.get("score", 0)) - int(prev.get("score", 0))) >= 4:
+            return True
+
+    return False
+
 def process_dual_path_scan(notify=False, quick_mode=False):
     universe = get_quick_scan_universe() if quick_mode else WATCHLIST
+    prev_active = dict(state.get("active_candidates", {}))
+
     result = scan_dual_path(universe=universe, quick_mode=quick_mode)
     sync_active_candidates_from_combined(result["combined"])
     refresh_quick_pool(result)
@@ -1267,7 +1299,15 @@ def process_dual_path_scan(notify=False, quick_mode=False):
     digest = dual_scan_hash(result)
     old_digest = state.get("last_dual_scan_hash", "")
 
-    if notify and chat_id_global and digest != old_digest:
+    notify_needed = should_notify_quick_update(
+        prev_active=prev_active,
+        new_combined=result["combined"],
+        old_digest=old_digest,
+        new_digest=digest,
+        quick_mode=quick_mode
+    )
+
+    if notify and chat_id_global and notify_needed:
         prefix = "AUTOSCAN CEPAT\n\n" if quick_mode else ""
         msg = prefix + build_dual_path_text(result) + "\n\n" + build_status_text()
         send_message(chat_id_global, msg)
@@ -1350,7 +1390,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX 3 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
