@@ -734,6 +734,29 @@ def score_pullback_path(data):
     score += int(data.get("rs_bonus", 0))
     return score
 
+
+def get_action_hint(data):
+    status = decision_status(data)
+    if status == "ACTIVE BID":
+        return "Aksi: boleh bid bertahap di area bid zone."
+    if status == "ACTIVE BID EARLY":
+        return "Aksi: boleh cicil kecil, jangan full size."
+    if status == "ACTIVE BID PULLBACK":
+        return "Aksi: boleh mulai cicil pullback, fokus dekat support."
+    if status == "WAIT RETEST":
+        return "Aksi: jangan kejar, tunggu masuk zona retest."
+    if status == "WATCH PULLBACK":
+        return "Aksi: pantau trigger mikro sebelum entry."
+    if status == "WATCH DEEP PULLBACK":
+        return "Aksi: tunggu bounce / micro breakout dari area bawah."
+    if status == "MOMENTUM CONTINUATION":
+        return "Aksi: boleh cicil kecil cepat, disiplin ambil profit."
+    if status == "OVEREXTENDED MOMENTUM":
+        return "Aksi: hindari entry baru, tunggu pullback sehat."
+    if status == "WATCH MOMENTUM":
+        return "Aksi: tunggu micro pullback, jangan kejar candle tinggi."
+    return "Aksi: wait and see, belum ada eksekusi valid."
+
 def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
     score_line = f"{score_name}: {rank_score}"
     if base_rank_score is not None and base_rank_score != rank_score:
@@ -749,7 +772,8 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Bid Zone: {data['bid_low']:.2f} - {data['bid_high']:.2f}",
         f"Trigger: {data['trigger']:.2f}",
         f"Invalidation: {data['invalidation']:.2f}",
-        f"Alasan: {data['reason']}"
+        f"Alasan: {data['reason']}",
+        get_action_hint(data)
     ])
 
 
@@ -1258,7 +1282,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME + RS STAGE 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + MARKET REGIME + RS + ACTION HINT aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
