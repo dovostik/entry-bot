@@ -1466,20 +1466,46 @@ def try_autoscan():
     state["last_scan_minute_key"] = minute_key
     save_state()
 
+
+def build_debug_watchlist_text():
+    lines = ["DEBUG WATCHLIST", ""]
+    lines.append(f"Watchlist aktif: {len(WATCHLIST)} saham")
+    pool = get_quick_scan_universe()
+    lines.append(f"Quick pool: {len(pool)} saham")
+    lines.append(f"Unsupported symbols: {len(unsupported_symbols)}")
+    lines.append("")
+    lines.append("Preview watchlist:")
+    preview = WATCHLIST[:10]
+    if preview:
+        lines.extend(f"- {s}" for s in preview)
+    else:
+        lines.append("(kosong)")
+    lines.append("")
+    lines.append("Preview quick pool:")
+    qprev = pool[:10]
+    if qprev:
+        lines.extend(f"- {s}" for s in qprev)
+    else:
+        lines.append("(kosong)")
+    return "\n".join(lines)
+
 def handle_command(chat_id, text):
     global chat_id_global, WATCHLIST
     raw = text.strip()
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + PASS MARKET MERAH aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + PASS MARKET MERAH + DEBUG aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
         return
+    if cmd == "/debugwatchlist":
+        send_message(chat_id, build_debug_watchlist_text())
+        return
     if cmd in ["/scan", "/scanjalur"]:
         if not WATCHLIST:
-            send_message(chat_id, "Watchlist kosong. Isi watchlist_syariah.txt lalu /reloadwatchlist.")
+            send_message(chat_id, "Watchlist kosong. Isi watchlist_syariah.txt lalu /reloadwatchlist. Cek juga /debugwatchlist")
             return
         result = process_dual_path_scan(notify=False, quick_mode=False)
         send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text())
@@ -1527,7 +1553,7 @@ def handle_command(chat_id, text):
         return
     if cmd.startswith("/journalstock"):
         parts = raw.split()
-        send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE")
+        send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE\n/debugwatchlist")
         return
 
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
