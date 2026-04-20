@@ -4,7 +4,7 @@ import os
 import json
 import io
 from contextlib import redirect_stdout, redirect_stderr
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import yfinance as yf
 
@@ -42,6 +42,7 @@ EVAL_INTERVALS = [15, 30, 60]
 TOP_PER_PATH = 5
 TOP_COMBINED = 10
 QUICK_POOL_MAX = 60
+WIB = timezone(timedelta(hours=7))
 
 def load_json_file(path, default):
     if os.path.exists(path):
@@ -1023,7 +1024,7 @@ def save_signal_evals(data):
     save_json_file(SIGNAL_EVAL_FILE, data)
 
 def signal_id(data):
-    return f"{datetime.now().strftime('%Y-%m-%d_%H:%M')}_{data['symbol']}"
+    return f"{datetime.now(WIB).strftime('%Y-%m-%d_%H:%M')}_{data['symbol']}"
 
 def add_signal_to_journal(data):
     journal = load_signal_journal()
@@ -1032,7 +1033,7 @@ def add_signal_to_journal(data):
         return
     journal.append({
         "id": sid,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "time": datetime.now(WIB).strftime("%Y-%m-%d %H:%M"),
         "symbol": data["symbol"],
         "status": decision_status(data),
         "setup": data["setup"],
@@ -1090,7 +1091,7 @@ def evaluate_pending_signals():
     journal = load_signal_journal()
     if not journal:
         return
-    now = datetime.now()
+    now = datetime.now(WIB)
     changed = False
     eval_rows = load_signal_evals()
     for sig in journal:
@@ -1122,7 +1123,7 @@ def evaluate_pending_signals():
 
 def build_journal_today_text():
     journal = load_signal_journal()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(WIB).strftime("%Y-%m-%d")
     rows = [x for x in journal if str(x.get("time", "")).startswith(today)]
     if not rows:
         return "Belum ada jurnal hari ini."
@@ -1289,6 +1290,23 @@ def should_notify_quick_update(prev_active, new_combined, old_digest, new_digest
     return False
 
 def process_dual_path_scan(notify=False, quick_mode=False):
+    if quick_mode and not is_market_open():
+        return {
+            "breakout": [],
+            "pullback": [],
+            "combined": [],
+            "market_regime": {
+                "label": "MARKET_CLOSED",
+                "sample_size": 0,
+                "bullish_ma20_pct": 0.0,
+                "bullish_ma50_pct": 0.0,
+                "momentum_pct": 0.0,
+                "expansion_pct": 0.0,
+                "breakout_count": 0,
+                "pullback_count": 0
+            }
+        }
+
     universe = get_quick_scan_universe() if quick_mode else WATCHLIST
     prev_active = dict(state.get("active_candidates", {}))
 
@@ -1346,14 +1364,14 @@ def build_unsupported_text():
     return "\n".join(lines)
 
 def is_market_open():
-    now = datetime.now()
+    now = datetime.now(WIB)
     if now.weekday() >= 5:
         return False
     current = now.strftime("%H:%M")
     return ("09:00" <= current <= "12:00") or ("13:30" <= current <= "15:15")
 
 def should_run_scan():
-    now = datetime.now()
+    now = datetime.now(WIB)
     if now.minute % SCAN_INTERVAL_MINUTES != 0:
         return None
     return now.strftime("%Y-%m-%d %H:%M")
@@ -1390,7 +1408,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX 3 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL WIB FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
