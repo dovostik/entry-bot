@@ -75,8 +75,9 @@ def save_state():
     save_json_file(STATE_FILE, state)
 
 def load_watchlist():
+    default_items = ["BRIS", "ANTM", "PTBA", "TLKM", "INDF", "ICBP", "KLBF", "EXCL", "PGAS", "CPIN"]
     if not os.path.exists(WATCHLIST_FILE):
-        return ["BRIS", "ANTM", "PTBA", "TLKM", "INDF", "ICBP", "KLBF", "EXCL", "PGAS", "CPIN"]
+        return default_items
     items = []
     with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
         for raw in f:
@@ -90,7 +91,7 @@ def load_watchlist():
         if x not in seen:
             seen.add(x)
             out.append(x)
-    return out
+    return out if out else default_items
 
 def load_unsupported_symbols():
     global unsupported_symbols
@@ -144,6 +145,8 @@ def get_quick_scan_universe():
     for s in state.get("active_candidates", {}).keys():
         symbols.append(s)
     symbols.extend(load_quick_pool())
+    if len(symbols) < 10:
+        symbols.extend(WATCHLIST[:min(40, len(WATCHLIST))])
     seen = set()
     out = []
     for s in symbols:
@@ -1347,12 +1350,15 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX 2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
         return
     if cmd in ["/scan", "/scanjalur"]:
+        if not WATCHLIST:
+            send_message(chat_id, "Watchlist kosong. Isi watchlist_syariah.txt lalu /reloadwatchlist.")
+            return
         result = process_dual_path_scan(notify=False, quick_mode=False)
         send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text())
         return
@@ -1361,12 +1367,14 @@ def handle_command(chat_id, text):
         save_state()
 
         pool = get_quick_scan_universe()
-        if not pool:
-            result = process_dual_path_scan(notify=False, quick_mode=False)
-            refresh_quick_pool(result)
+        if len(pool) < 10:
+            seed = list(state.get("active_candidates", {}).keys())
+            if len(seed) < 10:
+                seed.extend(WATCHLIST[:min(40, len(WATCHLIST))])
+            save_quick_pool(seed)
             pool = get_quick_scan_universe()
 
-        send_message(chat_id, f"Autoscan cepat diaktifkan. Scan tiap 5 menit memakai quick pool prioritas.\nQuick pool awal: {len(pool)} saham")
+        send_message(chat_id, f"Autoscan cepat diaktifkan. Scan tiap 5 menit memakai quick pool prioritas.\nQuick pool awal: {len(pool)} saham\nWatchlist aktif: {len(WATCHLIST)} saham")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
@@ -1375,7 +1383,7 @@ def handle_command(chat_id, text):
         return
     if cmd == "/statusauto":
         pool = get_quick_scan_universe()
-        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}\nQuick pool: {len(pool)} saham")
+        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}\nQuick pool: {len(pool)} saham\nWatchlist aktif: {len(WATCHLIST)} saham")
         return
     if cmd == "/statuskandidat":
         send_message(chat_id, build_status_text())
