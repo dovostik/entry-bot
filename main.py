@@ -22,6 +22,7 @@ WATCHLIST_FILE = "watchlist_syariah.txt"
 UNSUPPORTED_SYMBOLS_FILE = "unsupported_symbols.json"
 SIGNAL_JOURNAL_FILE = "signal_journal.json"
 SIGNAL_EVAL_FILE = "signal_evaluations.json"
+QUICK_POOL_FILE = "quick_pool.json"
 
 chat_id_global = None
 state = {
@@ -31,6 +32,7 @@ state = {
     "last_dual_scan_hash": ""
 }
 unsupported_symbols = set()
+relative_strength_map = {}
 
 MIN_VALUE_TRADED = 10000000000
 MIN_DAILY_RANGE_PCT = 2.0
@@ -39,8 +41,7 @@ SCAN_INTERVAL_MINUTES = 5
 EVAL_INTERVALS = [15, 30, 60]
 TOP_PER_PATH = 5
 TOP_COMBINED = 10
-relative_strength_map = {}
-
+QUICK_POOL_MAX = 60
 
 def load_json_file(path, default):
     if os.path.exists(path):
@@ -106,6 +107,52 @@ def mark_symbol_unsupported(symbol):
         save_unsupported_symbols()
 
 WATCHLIST = load_watchlist()
+
+def load_quick_pool():
+    data = load_json_file(QUICK_POOL_FILE, [])
+    if isinstance(data, list):
+        return [str(x).upper().strip() for x in data if str(x).strip()]
+    return []
+
+def save_quick_pool(items):
+    cleaned = []
+    seen = set()
+    for x in items:
+        s = str(x).upper().strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        cleaned.append(s)
+    save_json_file(QUICK_POOL_FILE, cleaned[:QUICK_POOL_MAX])
+
+def refresh_quick_pool(result):
+    symbols = []
+    for d in result.get("combined", []):
+        symbols.append(d["symbol"])
+    for item in result.get("breakout", []):
+        symbols.append(item["data"]["symbol"])
+    for item in result.get("pullback", []):
+        symbols.append(item["data"]["symbol"])
+    for s in state.get("active_candidates", {}).keys():
+        symbols.append(s)
+    old_pool = load_quick_pool()
+    symbols.extend(old_pool[:QUICK_POOL_MAX])
+    save_quick_pool(symbols)
+
+def get_quick_scan_universe():
+    symbols = []
+    for s in state.get("active_candidates", {}).keys():
+        symbols.append(s)
+    symbols.extend(load_quick_pool())
+    seen = set()
+    out = []
+    for s in symbols:
+        s = str(s).upper().strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out[:QUICK_POOL_MAX]
 
 def send_message(chat_id, text):
     try:
@@ -279,7 +326,6 @@ def validation_status(close, bid_low, bid_high, trigger, invalidation, fake_brea
         return "WAIT", "momentum sudah tinggi, tunggu micro pullback"
     return "WAIT", "tunggu area ideal"
 
-
 def get_regime_snapshot(symbol):
     symbol = symbol.upper().strip()
     if symbol in unsupported_symbols:
@@ -291,20 +337,17 @@ def get_regime_snapshot(symbol):
         hist = calc_indicators(hist)
         last = hist.iloc[-1]
         prev = hist.iloc[-2]
-
         close = float(last["Close"])
         prev_close = float(prev["Close"])
         ma20 = float(last["MA20"]) if pd.notna(last["MA20"]) else close
         ma50 = float(last["MA50"]) if pd.notna(last["MA50"]) else close
         rsi = float(last["RSI"]) if pd.notna(last["RSI"]) else 50.0
         macd_hist = float(last["MACD_HIST"]) if pd.notna(last["MACD_HIST"]) else 0.0
-
         volume_today = float(last["Volume"])
         value_traded = float(last["VALUE_TRADED"]) if pd.notna(last["VALUE_TRADED"]) else close * volume_today
         valavg5 = float(last["VALAVG5"]) if pd.notna(last["VALAVG5"]) else value_traded
         change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
         volume_label, _ = classify_volume(value_traded, valavg5)
-
         return {
             "symbol": symbol,
             "close": close,
@@ -318,7 +361,48 @@ def get_regime_snapshot(symbol):
     except Exception:
         return None
 
-def get_market_snapshot(symbol):
+def detect_market_regime_from_watchlist():
+    regime_data = []
+    for symbol in WATCHLIST:
+        snap = get_regime_snapshot(symbol)
+        if snap:
+            regime_data.append(snap)
+
+    total = len(regime_data)
+    if total == 0:
+        return {"label": "NO_DATA", "sample_size": 0, "bullish_ma20_pct": 0.0, "bullish_ma50_pct": 0.0, "momentum_pct": 0.0, "expansion_pct": 0.0, "breakout_count": 0, "pullback_count": 0}
+
+    bullish_ma20 = sum(1 for d in regime_data if d["close"] > d["ma20"])
+    bullish_ma50 = sum(1 for d in regime_data if d["close"] > d["ma50"])
+    momentum = sum(1 for d in regime_data if d["rsi"] > 50 and d["macd_hist"] > 0)
+    expansion = sum(1 for d in regime_data if d["change_pct"] > 1 and d["volume"] == "Kuat")
+
+    bullish_ma20_pct = bullish_ma20 / total * 100
+    bullish_ma50_pct = bullish_ma50 / total * 100
+    momentum_pct = momentum / total * 100
+    expansion_pct = expansion / total * 100
+
+    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12:
+        label = "BREAKOUT_FRIENDLY"
+    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12:
+        label = "PULLBACK_FRIENDLY"
+    elif bullish_ma20_pct < 40 and momentum_pct < 35:
+        label = "WEAK_MARKET"
+    else:
+        label = "MIXED"
+
+    return {
+        "label": label,
+        "sample_size": total,
+        "bullish_ma20_pct": round(bullish_ma20_pct, 1),
+        "bullish_ma50_pct": round(bullish_ma50_pct, 1),
+        "momentum_pct": round(momentum_pct, 1),
+        "expansion_pct": round(expansion_pct, 1),
+        "breakout_count": 0,
+        "pullback_count": 0
+    }
+
+def get_market_snapshot(symbol, regime_label=None):
     symbol = symbol.upper().strip()
     if symbol in unsupported_symbols:
         return None
@@ -360,9 +444,7 @@ def get_market_snapshot(symbol):
         recent_low = float(hist["Low"].iloc[-6:-1].min())
         micro_breakout, micro_body_ratio, micro_vol_ratio = detect_micro_breakout(hist)
 
-        fake_breakout, _, breakout_attempt, close_range_pct, upper_wick_pct = detect_fake_breakout(
-            close, high, low, open_price, recent_high, change_pct
-        )
+        fake_breakout, _, breakout_attempt, close_range_pct, upper_wick_pct = detect_fake_breakout(close, high, low, open_price, recent_high, change_pct)
         timing, timing_reason = timing_label(close, low, high)
         volume_label, volume_score = classify_volume(value_traded, valavg5)
         base_low, base_high, is_sideway = get_base_zone(hist)
@@ -400,25 +482,36 @@ def get_market_snapshot(symbol):
             near_lower_range and close >= support and close >= ma20 * 0.99 and rsi >= 45
             and macd >= signal * 0.9 and trend_bias != "bearish"
         )
+
+        ma20_distance_pct = ((close - ma20) / ma20) * 100 if ma20 else 0
+        pullback_friendly = regime_label == "PULLBACK_FRIENDLY"
+        pullback_ideal_rsi_min = 45 if pullback_friendly else 48
+        pullback_ideal_rsi_max = 65 if pullback_friendly else 62
+        pullback_deep_rsi_min = 38 if pullback_friendly else 40
+        pullback_deep_rsi_max = 60 if pullback_friendly else 58
+        pullback_ma20_dist = 0.04 if pullback_friendly else 0.03
+        pullback_ma50_dist = 0.065 if pullback_friendly else 0.05
+        pullback_ma50_floor = 0.98 if pullback_friendly else 0.985
+
         pullback_ideal = (
             trend_bias == "bullish"
             and pd.notna(ma20)
-            and abs(close - ma20) / ma20 <= 0.03
-            and 48 <= rsi <= 62
+            and abs(close - ma20) / ma20 <= pullback_ma20_dist
+            and pullback_ideal_rsi_min <= rsi <= pullback_ideal_rsi_max
             and close >= ma20 * 0.99
-            and macd_hist >= -2.0
+            and macd_hist >= -2.5
             and value_traded >= MIN_VALUE_TRADED
         )
         pullback_deep = (
             trend_bias != "bearish"
             and pd.notna(ma50)
-            and abs(close - ma50) / ma50 <= 0.05
-            and 40 <= rsi <= 58
-            and close >= ma50 * 0.985
-            and macd >= signal * 0.85
+            and abs(close - ma50) / ma50 <= pullback_ma50_dist
+            and pullback_deep_rsi_min <= rsi <= pullback_deep_rsi_max
+            and close >= ma50 * pullback_ma50_floor
+            and macd >= signal * 0.82
             and value_traded >= MIN_VALUE_TRADED
         )
-        ma20_distance_pct = ((close - ma20) / ma20) * 100 if ma20 else 0
+
         breakout_follow_through = (
             breakout_attempt and not fake_breakout and volume_score >= 0 and trend_bias == "bullish"
             and close > (base_high if base_high else recent_high) * 1.01
@@ -453,7 +546,7 @@ def get_market_snapshot(symbol):
             return None
         if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             return None
-        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
+        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
         if bad_sideway and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
@@ -468,6 +561,8 @@ def get_market_snapshot(symbol):
         if setup == "BREAKOUT_FOLLOW_THROUGH" and change_pct > 6.5:
             return None
         if timing == "LATE" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+            return None
+        if timing == "LATE" and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"] and not pullback_friendly:
             return None
 
         bid_low, bid_high, _ = build_entry_zone(setup, close, ma20, ma50, base_low, base_high)
@@ -486,71 +581,51 @@ def get_market_snapshot(symbol):
         reasons, tech_notes = [], []
 
         if close > ma20:
-            trend += 3
-            tech_notes.append("di atas MA20")
+            trend += 3; tech_notes.append("di atas MA20")
         else:
-            trend -= 4
-            tech_notes.append("di bawah MA20")
+            trend -= 4; tech_notes.append("di bawah MA20")
         if ma20 > ma50:
-            trend += 4
-            tech_notes.append("MA20 > MA50")
+            trend += 4; tech_notes.append("MA20 > MA50")
         else:
-            trend -= 3
-            tech_notes.append("MA20 < MA50")
+            trend -= 3; tech_notes.append("MA20 < MA50")
         if close > ma100:
-            trend += 2
-            tech_notes.append("di atas MA100")
+            trend += 2; tech_notes.append("di atas MA100")
         else:
             tech_notes.append("di bawah MA100")
         if rsi >= 55:
-            trend += 3
-            tech_notes.append(f"RSI {rsi:.1f} kuat")
+            trend += 3; tech_notes.append(f"RSI {rsi:.1f} kuat")
         elif rsi < 45:
-            trend -= 4
-            tech_notes.append(f"RSI {rsi:.1f} lemah")
+            trend -= 4; tech_notes.append(f"RSI {rsi:.1f} lemah")
         else:
             tech_notes.append(f"RSI {rsi:.1f} netral")
         if macd_hist > 0:
-            trend += 3
-            tech_notes.append("MACD menguat")
+            trend += 3; tech_notes.append("MACD menguat")
         else:
-            trend -= 2
-            tech_notes.append("MACD lemah")
+            trend -= 2; tech_notes.append("MACD lemah")
 
         if setup == "SIDEWAY ACCUMULATION PREPARE":
-            structure += 18
-            reasons.append("base sehat dekat bawah range")
+            structure += 18; reasons.append("base sehat dekat bawah range")
         elif setup == "SUPPORT BOUNCE PREPARE":
-            structure += 16
-            reasons.append("pantulan support dekat area bawah")
+            structure += 16; reasons.append("pantulan support dekat area bawah")
         elif setup == "VALID_BREAKOUT_EXECUTE":
-            structure += 16
-            reasons.append("breakout valid belum terlalu jauh")
+            structure += 16; reasons.append("breakout valid belum terlalu jauh")
         elif setup == "BREAKOUT_RETEST_READY":
-            structure += 15
-            reasons.append("breakout sudah jalan, tunggu retest")
+            structure += 15; reasons.append("breakout sudah jalan, tunggu retest")
         elif setup == "BREAKOUT_FOLLOW_THROUGH":
-            structure += 18
-            reasons.append("breakout lanjut tanpa retest, momentum masih jalan")
+            structure += 18; reasons.append("breakout lanjut tanpa retest, momentum masih jalan")
         elif setup == "PULLBACK_IDEAL":
-            structure += 17
-            reasons.append("pullback sehat dekat MA20")
+            structure += 17; reasons.append("pullback sehat dekat MA20")
         elif setup == "PULLBACK_DEEP":
-            structure += 14
-            reasons.append("pullback dalam dekat MA50")
+            structure += 14; reasons.append("pullback dalam dekat MA50")
 
         if is_sideway:
-            structure += 4
-            reasons.append("range rapi")
+            structure += 4; reasons.append("range rapi")
         if near_lower_range:
-            structure += 6
-            reasons.append("posisi dekat support")
+            structure += 6; reasons.append("posisi dekat support")
         if volume_score > 0:
-            confirmation += 8
-            reasons.append("volume mendukung")
+            confirmation += 8; reasons.append("volume mendukung")
         if micro_breakout and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"]:
-            confirmation += 6
-            reasons.append("micro breakout terdeteksi")
+            confirmation += 6; reasons.append("micro breakout terdeteksi")
         if setup == "BREAKOUT_RETEST_READY" and trend_bias != "bearish":
             confirmation += 3
         if setup == "BREAKOUT_FOLLOW_THROUGH":
@@ -563,6 +638,8 @@ def get_market_snapshot(symbol):
         if upper_wick_pct > 0.35:
             penalty += 6
         if trend_bias == "neutral":
+            penalty += 4
+        if dead_market and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             penalty += 4
         if setup == "BREAKOUT_RETEST_READY":
             penalty += 4
@@ -608,10 +685,7 @@ def get_market_snapshot(symbol):
         tp1 = round(close * 1.01, 2)
         tp2 = round(close * 1.02, 2)
 
-        v_status, v_reason = validation_status(
-            close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup,
-            volume_score, range_position, trend_bias, rsi, micro_breakout, micro_body_ratio, micro_vol_ratio
-        )
+        v_status, v_reason = validation_status(close, bid_low, bid_high, trigger, invalidation, fake_breakout, setup, volume_score, range_position, trend_bias, rsi, micro_breakout, micro_body_ratio, micro_vol_ratio)
         if v_status == "INVALID":
             return None
 
@@ -696,6 +770,107 @@ def action_priority(data):
     }
     return priority_map.get(status, 0)
 
+def update_relative_strength_map(scanned_data):
+    global relative_strength_map
+    rows = []
+    for d in scanned_data:
+        try:
+            hist = safe_yahoo_history(d["symbol"])
+            if hist is None or hist.empty or len(hist) < 25:
+                continue
+            close_now = float(hist["Close"].iloc[-1])
+            close_5 = float(hist["Close"].iloc[-6]) if len(hist) >= 6 else close_now
+            close_20 = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else close_now
+            ret_5 = ((close_now - close_5) / close_5) * 100 if close_5 else 0.0
+            ret_20 = ((close_now - close_20) / close_20) * 100 if close_20 else 0.0
+            rows.append({"symbol": d["symbol"], "ret_5": ret_5, "ret_20": ret_20})
+        except Exception:
+            continue
+
+    if not rows:
+        relative_strength_map = {}
+        return
+
+    rows_5 = sorted(rows, key=lambda x: x["ret_5"], reverse=True)
+    rows_20 = sorted(rows, key=lambda x: x["ret_20"], reverse=True)
+    n = len(rows)
+    rank5 = {}
+    rank20 = {}
+    for idx, row in enumerate(rows_5):
+        rank5[row["symbol"]] = ((n - idx) / n) * 100 if n else 0
+    for idx, row in enumerate(rows_20):
+        rank20[row["symbol"]] = ((n - idx) / n) * 100 if n else 0
+
+    rs_map = {}
+    for row in rows:
+        symbol = row["symbol"]
+        pct5 = rank5.get(symbol, 50)
+        pct20 = rank20.get(symbol, 50)
+        if pct5 >= 75 and pct20 >= 75:
+            label = "LEADER STRONG"; bonus = 5
+        elif pct5 >= 75 and pct20 >= 40:
+            label = "EMERGING LEADER"; bonus = 3
+        elif pct20 >= 75 and pct5 < 45:
+            label = "PULLBACK LEADER"; bonus = 2
+        elif pct5 <= 30 and pct20 <= 30:
+            label = "LAGGARD"; bonus = -4
+        else:
+            label = "AVERAGE"; bonus = 0
+        rs_map[symbol] = {
+            "ret_5": round(row["ret_5"], 2),
+            "ret_20": round(row["ret_20"], 2),
+            "pct_rank_5": round(pct5, 1),
+            "pct_rank_20": round(pct20, 1),
+            "label": label,
+            "bonus": bonus
+        }
+    relative_strength_map = rs_map
+
+def detect_market_regime(scanned_data=None):
+    regime_data = []
+    for symbol in WATCHLIST:
+        snap = get_regime_snapshot(symbol)
+        if snap:
+            regime_data.append(snap)
+
+    total = len(regime_data)
+    if total == 0:
+        return {"label": "NO_DATA", "sample_size": 0, "bullish_ma20_pct": 0.0, "bullish_ma50_pct": 0.0, "momentum_pct": 0.0, "expansion_pct": 0.0, "breakout_count": 0, "pullback_count": 0}
+
+    bullish_ma20 = sum(1 for d in regime_data if d["close"] > d["ma20"])
+    bullish_ma50 = sum(1 for d in regime_data if d["close"] > d["ma50"])
+    momentum = sum(1 for d in regime_data if d["rsi"] > 50 and d["macd_hist"] > 0)
+    expansion = sum(1 for d in regime_data if d["change_pct"] > 1 and d["volume"] == "Kuat")
+
+    candidate_data = scanned_data or []
+    breakout_count = sum(1 for d in candidate_data if d["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"])
+    pullback_count = sum(1 for d in candidate_data if d["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"])
+
+    bullish_ma20_pct = bullish_ma20 / total * 100
+    bullish_ma50_pct = bullish_ma50 / total * 100
+    momentum_pct = momentum / total * 100
+    expansion_pct = expansion / total * 100
+
+    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12 and breakout_count >= pullback_count:
+        label = "BREAKOUT_FRIENDLY"
+    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12 and pullback_count >= breakout_count:
+        label = "PULLBACK_FRIENDLY"
+    elif bullish_ma20_pct < 40 and momentum_pct < 35:
+        label = "WEAK_MARKET"
+    else:
+        label = "MIXED"
+
+    return {
+        "label": label,
+        "sample_size": total,
+        "bullish_ma20_pct": round(bullish_ma20_pct, 1),
+        "bullish_ma50_pct": round(bullish_ma50_pct, 1),
+        "momentum_pct": round(momentum_pct, 1),
+        "expansion_pct": round(expansion_pct, 1),
+        "breakout_count": breakout_count,
+        "pullback_count": pullback_count
+    }
+
 def score_breakout_path(data):
     score = int(data.get("score", 0))
     if data["setup"] == "VALID_BREAKOUT_EXECUTE":
@@ -734,6 +909,26 @@ def score_pullback_path(data):
     score += int(data.get("rs_bonus", 0))
     return score
 
+def apply_market_regime_bonus(data, base_score, path_type, regime_label):
+    score = int(base_score)
+    if regime_label == "BREAKOUT_FRIENDLY":
+        if path_type == "breakout":
+            score += 5
+        elif path_type == "pullback":
+            score -= 1
+    elif regime_label == "PULLBACK_FRIENDLY":
+        if path_type == "pullback":
+            score += 5
+        elif path_type == "breakout":
+            score -= 1
+    elif regime_label == "WEAK_MARKET":
+        if decision_status(data) in ["ACTIVE BID EARLY", "MOMENTUM CONTINUATION"]:
+            score -= 5
+        elif path_type == "breakout":
+            score -= 3
+        elif path_type == "pullback":
+            score -= 1
+    return score
 
 def get_action_hint(data):
     status = decision_status(data)
@@ -748,7 +943,7 @@ def get_action_hint(data):
     if status == "WATCH PULLBACK":
         return "Aksi: pantau trigger mikro sebelum entry."
     if status == "WATCH DEEP PULLBACK":
-        return "Aksi: tunggu bounce / micro breakout dari area bawah."
+        return "Aksi: tunggu bounce / micro breakout dari area bawah, boleh pantau lebih dekat saat regime pullback."
     if status == "MOMENTUM CONTINUATION":
         return "Aksi: boleh cicil kecil cepat, disiplin ambil profit."
     if status == "OVEREXTENDED MOMENTUM":
@@ -775,139 +970,6 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Alasan: {data['reason']}",
         get_action_hint(data)
     ])
-
-
-def update_relative_strength_map(scanned_data):
-    global relative_strength_map
-    rows = []
-    for d in scanned_data:
-        try:
-            hist = safe_yahoo_history(d["symbol"])
-            if hist is None or hist.empty or len(hist) < 25:
-                continue
-
-            close_now = float(hist["Close"].iloc[-1])
-            close_5 = float(hist["Close"].iloc[-6]) if len(hist) >= 6 else close_now
-            close_20 = float(hist["Close"].iloc[-21]) if len(hist) >= 21 else close_now
-
-            ret_5 = ((close_now - close_5) / close_5) * 100 if close_5 else 0.0
-            ret_20 = ((close_now - close_20) / close_20) * 100 if close_20 else 0.0
-
-            rows.append({
-                "symbol": d["symbol"],
-                "ret_5": ret_5,
-                "ret_20": ret_20
-            })
-        except Exception:
-            continue
-
-    if not rows:
-        relative_strength_map = {}
-        return
-
-    rows_5 = sorted(rows, key=lambda x: x["ret_5"], reverse=True)
-    rows_20 = sorted(rows, key=lambda x: x["ret_20"], reverse=True)
-    n = len(rows)
-
-    rank5 = {}
-    rank20 = {}
-    for idx, row in enumerate(rows_5):
-        pct_rank = ((n - idx) / n) * 100 if n else 0
-        rank5[row["symbol"]] = pct_rank
-    for idx, row in enumerate(rows_20):
-        pct_rank = ((n - idx) / n) * 100 if n else 0
-        rank20[row["symbol"]] = pct_rank
-
-    rs_map = {}
-    for row in rows:
-        symbol = row["symbol"]
-        pct5 = rank5.get(symbol, 50)
-        pct20 = rank20.get(symbol, 50)
-
-        if pct5 >= 75 and pct20 >= 75:
-            label = "LEADER STRONG"
-            bonus = 5
-        elif pct5 >= 75 and pct20 >= 40:
-            label = "EMERGING LEADER"
-            bonus = 3
-        elif pct20 >= 75 and pct5 < 45:
-            label = "PULLBACK LEADER"
-            bonus = 2
-        elif pct5 <= 30 and pct20 <= 30:
-            label = "LAGGARD"
-            bonus = -4
-        else:
-            label = "AVERAGE"
-            bonus = 0
-
-        rs_map[symbol] = {
-            "ret_5": round(row["ret_5"], 2),
-            "ret_20": round(row["ret_20"], 2),
-            "pct_rank_5": round(pct5, 1),
-            "pct_rank_20": round(pct20, 1),
-            "label": label,
-            "bonus": bonus
-        }
-
-    relative_strength_map = rs_map
-
-def detect_market_regime(scanned_data=None):
-    regime_data = []
-    for symbol in WATCHLIST:
-        snap = get_regime_snapshot(symbol)
-        if snap:
-            regime_data.append(snap)
-
-    total = len(regime_data)
-    if total == 0:
-        return {
-            "label": "NO_DATA",
-            "sample_size": 0,
-            "bullish_ma20_pct": 0.0,
-            "bullish_ma50_pct": 0.0,
-            "momentum_pct": 0.0,
-            "expansion_pct": 0.0,
-            "breakout_count": 0,
-            "pullback_count": 0,
-        }
-
-    bullish_ma20 = sum(1 for d in regime_data if d["close"] > d["ma20"])
-    bullish_ma50 = sum(1 for d in regime_data if d["close"] > d["ma50"])
-    momentum = sum(1 for d in regime_data if d["rsi"] > 50 and d["macd_hist"] > 0)
-    expansion = sum(1 for d in regime_data if d["change_pct"] > 1 and d["volume"] == "Kuat")
-
-    candidate_data = scanned_data or []
-    breakout_count = sum(1 for d in candidate_data if d["setup"] in [
-        "VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY", "BREAKOUT_FOLLOW_THROUGH"
-    ])
-    pullback_count = sum(1 for d in candidate_data if d["setup"] in [
-        "SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"
-    ])
-
-    bullish_ma20_pct = bullish_ma20 / total * 100
-    bullish_ma50_pct = bullish_ma50 / total * 100
-    momentum_pct = momentum / total * 100
-    expansion_pct = expansion / total * 100
-
-    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12 and breakout_count >= pullback_count:
-        label = "BREAKOUT_FRIENDLY"
-    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12 and pullback_count >= breakout_count:
-        label = "PULLBACK_FRIENDLY"
-    elif bullish_ma20_pct < 40 and momentum_pct < 35:
-        label = "WEAK_MARKET"
-    else:
-        label = "MIXED"
-
-    return {
-        "label": label,
-        "sample_size": total,
-        "bullish_ma20_pct": round(bullish_ma20_pct, 1),
-        "bullish_ma50_pct": round(bullish_ma50_pct, 1),
-        "momentum_pct": round(momentum_pct, 1),
-        "expansion_pct": round(expansion_pct, 1),
-        "breakout_count": breakout_count,
-        "pullback_count": pullback_count,
-    }
 
 def build_market_regime_header(regime):
     return "\n".join([
@@ -1108,37 +1170,18 @@ def build_journal_stock_text(symbol):
         lines.append("")
     return "\n".join(lines).strip()
 
-
-def apply_market_regime_bonus(data, base_score, path_type, regime_label):
-    score = int(base_score)
-
-    if regime_label == "BREAKOUT_FRIENDLY":
-        if path_type == "breakout":
-            score += 5
-        elif path_type == "pullback":
-            score -= 1
-    elif regime_label == "PULLBACK_FRIENDLY":
-        if path_type == "pullback":
-            score += 5
-        elif path_type == "breakout":
-            score -= 1
-    elif regime_label == "WEAK_MARKET":
-        if decision_status(data) in ["ACTIVE BID EARLY", "MOMENTUM CONTINUATION"]:
-            score -= 5
-        elif path_type == "breakout":
-            score -= 3
-        elif path_type == "pullback":
-            score -= 1
-
-    return score
-
-def scan_dual_path():
+def scan_dual_path(universe=None, quick_mode=False):
     breakout_candidates, pullback_candidates, combined = [], [], []
     raw_breakout = []
     raw_pullback = []
 
-    for symbol in WATCHLIST:
-        data = get_market_snapshot(symbol)
+    pre_regime = detect_market_regime_from_watchlist()
+    pre_regime_label = pre_regime.get("label", "MIXED")
+
+    symbols = universe if universe else WATCHLIST
+
+    for symbol in symbols:
+        data = get_market_snapshot(symbol, regime_label=pre_regime_label)
         if not data:
             continue
         combined.append(data)
@@ -1163,20 +1206,12 @@ def scan_dual_path():
     for data in raw_breakout:
         base_rank = score_breakout_path(data)
         final_rank = apply_market_regime_bonus(data, base_rank, "breakout", regime_label)
-        breakout_candidates.append({
-            "data": data,
-            "rank_score": final_rank,
-            "base_rank_score": base_rank
-        })
+        breakout_candidates.append({"data": data, "rank_score": final_rank, "base_rank_score": base_rank})
 
     for data in raw_pullback:
         base_rank = score_pullback_path(data)
         final_rank = apply_market_regime_bonus(data, base_rank, "pullback", regime_label)
-        pullback_candidates.append({
-            "data": data,
-            "rank_score": final_rank,
-            "base_rank_score": base_rank
-        })
+        pullback_candidates.append({"data": data, "rank_score": final_rank, "base_rank_score": base_rank})
 
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
@@ -1186,7 +1221,9 @@ def scan_dual_path():
         "breakout": breakout_candidates[:TOP_PER_PATH],
         "pullback": pullback_candidates[:TOP_PER_PATH],
         "combined": combined[:TOP_COMBINED],
-        "market_regime": regime
+        "market_regime": regime,
+        "quick_mode": quick_mode,
+        "universe_size": len(symbols),
     }
 
 def sync_active_candidates_from_combined(combined):
@@ -1206,45 +1243,30 @@ def sync_active_candidates_from_combined(combined):
 
 def dual_scan_hash(result):
     parts = []
-
     regime = result.get("market_regime", {})
-    parts.append(
-        f"REGIME:{regime.get('label','-')}:{regime.get('sample_size',0)}:"
-        f"{regime.get('bullish_ma20_pct',0)}:{regime.get('bullish_ma50_pct',0)}:"
-        f"{regime.get('momentum_pct',0)}:{regime.get('expansion_pct',0)}"
-    )
-
+    parts.append(f"REGIME:{regime.get('label','-')}:{regime.get('sample_size',0)}:{regime.get('bullish_ma20_pct',0)}:{regime.get('bullish_ma50_pct',0)}:{regime.get('momentum_pct',0)}:{regime.get('expansion_pct',0)}")
     for item in result.get("breakout", []):
         d = item["data"]
-        parts.append(
-            f"B:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:"
-            f"{d.get('close',0)}:{d.get('setup','-')}"
-        )
-
+        parts.append(f"B:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     for item in result.get("pullback", []):
         d = item["data"]
-        parts.append(
-            f"P:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:"
-            f"{d.get('close',0)}:{d.get('setup','-')}"
-        )
-
+        parts.append(f"P:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     for d in result.get("combined", []):
-        parts.append(
-            f"C:{d['symbol']}:{decision_status(d)}:{d.get('score',0)}:"
-            f"{d.get('close',0)}:{d.get('setup','-')}"
-        )
-
+        parts.append(f"C:{d['symbol']}:{decision_status(d)}:{d.get('score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     return "|".join(parts)
 
-def process_dual_path_scan(notify=False):
-    result = scan_dual_path()
+def process_dual_path_scan(notify=False, quick_mode=False):
+    universe = get_quick_scan_universe() if quick_mode else WATCHLIST
+    result = scan_dual_path(universe=universe, quick_mode=quick_mode)
     sync_active_candidates_from_combined(result["combined"])
+    refresh_quick_pool(result)
 
     digest = dual_scan_hash(result)
     old_digest = state.get("last_dual_scan_hash", "")
 
     if notify and chat_id_global and digest != old_digest:
-        msg = build_dual_path_text(result) + "\n\n" + build_status_text()
+        prefix = "AUTOSCAN CEPAT\n\n" if quick_mode else ""
+        msg = prefix + build_dual_path_text(result) + "\n\n" + build_status_text()
         send_message(chat_id_global, msg)
         state["last_dual_scan_hash"] = digest
         save_state()
@@ -1295,7 +1317,6 @@ def should_run_scan():
 
 def try_autoscan():
     global state
-
     if not state.get("autoscan"):
         return
     if not is_market_open():
@@ -1309,7 +1330,7 @@ def try_autoscan():
     if state.get("last_scan_minute_key") == minute_key:
         return
 
-    process_dual_path_scan(notify=True)
+    process_dual_path_scan(notify=True, quick_mode=True)
     state["last_scan_minute_key"] = minute_key
     save_state()
 
@@ -1317,28 +1338,30 @@ def handle_command(chat_id, text):
     global chat_id_global, WATCHLIST
     raw = text.strip()
     cmd = raw.lower()
+
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + RS + ACTION HINT + AUTOSCAN FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
         return
     if cmd in ["/scan", "/scanjalur"]:
-        result = process_dual_path_scan(notify=False)
+        result = process_dual_path_scan(notify=False, quick_mode=False)
         send_message(chat_id, build_dual_path_text(result) + "\n\n" + build_status_text())
         return
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan FULL COMBINED + MARKET REGIME diaktifkan. Scan setiap 5 menit saat market buka.")
+        send_message(chat_id, "Autoscan cepat diaktifkan. Scan tiap 5 menit memakai quick pool prioritas.")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
         save_state()
-        send_message(chat_id, "Autoscan FULL COMBINED + MARKET REGIME dimatikan.")
+        send_message(chat_id, "Autoscan dimatikan.")
         return
     if cmd == "/statusauto":
-        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}")
+        pool = get_quick_scan_universe()
+        send_message(chat_id, f"Status autoscan: {'ON' if state.get('autoscan') else 'OFF'}\nQuick pool: {len(pool)} saham")
         return
     if cmd == "/statuskandidat":
         send_message(chat_id, build_status_text())
@@ -1362,6 +1385,7 @@ def handle_command(chat_id, text):
         parts = raw.split()
         send_message(chat_id, build_journal_stock_text(parts[1]) if len(parts) >= 2 else "Gunakan format: /journalstock KODE")
         return
+
     send_message(chat_id, "Perintah tidak dikenal. Gunakan /start")
 
 load_chat()
