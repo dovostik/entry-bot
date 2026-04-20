@@ -1330,6 +1330,13 @@ def try_autoscan():
     if state.get("last_scan_minute_key") == minute_key:
         return
 
+    pool = get_quick_scan_universe()
+    if not pool:
+        seed = list(state.get("active_candidates", {}).keys())
+        if not seed:
+            seed = WATCHLIST[:min(QUICK_POOL_MAX, 40)]
+        save_quick_pool(seed)
+
     process_dual_path_scan(notify=True, quick_mode=True)
     state["last_scan_minute_key"] = minute_key
     save_state()
@@ -1340,7 +1347,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
@@ -1352,7 +1359,14 @@ def handle_command(chat_id, text):
     if cmd == "/autoscanon":
         state["autoscan"] = True
         save_state()
-        send_message(chat_id, "Autoscan cepat diaktifkan. Scan tiap 5 menit memakai quick pool prioritas.")
+
+        pool = get_quick_scan_universe()
+        if not pool:
+            result = process_dual_path_scan(notify=False, quick_mode=False)
+            refresh_quick_pool(result)
+            pool = get_quick_scan_universe()
+
+        send_message(chat_id, f"Autoscan cepat diaktifkan. Scan tiap 5 menit memakai quick pool prioritas.\nQuick pool awal: {len(pool)} saham")
         return
     if cmd == "/autoscanoff":
         state["autoscan"] = False
