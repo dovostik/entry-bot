@@ -318,58 +318,7 @@ def get_regime_snapshot(symbol):
     except Exception:
         return None
 
-
-def detect_market_regime_from_watchlist():
-    regime_data = []
-    for symbol in WATCHLIST:
-        snap = get_regime_snapshot(symbol)
-        if snap:
-            regime_data.append(snap)
-
-    total = len(regime_data)
-    if total == 0:
-        return {
-            "label": "NO_DATA",
-            "sample_size": 0,
-            "bullish_ma20_pct": 0.0,
-            "bullish_ma50_pct": 0.0,
-            "momentum_pct": 0.0,
-            "expansion_pct": 0.0,
-            "breakout_count": 0,
-            "pullback_count": 0
-        }
-
-    bullish_ma20 = sum(1 for d in regime_data if d["close"] > d["ma20"])
-    bullish_ma50 = sum(1 for d in regime_data if d["close"] > d["ma50"])
-    momentum = sum(1 for d in regime_data if d["rsi"] > 50 and d["macd_hist"] > 0)
-    expansion = sum(1 for d in regime_data if d["change_pct"] > 1 and d["volume"] == "Kuat")
-
-    bullish_ma20_pct = bullish_ma20 / total * 100
-    bullish_ma50_pct = bullish_ma50 / total * 100
-    momentum_pct = momentum / total * 100
-    expansion_pct = expansion / total * 100
-
-    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12:
-        label = "BREAKOUT_FRIENDLY"
-    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12:
-        label = "PULLBACK_FRIENDLY"
-    elif bullish_ma20_pct < 40 and momentum_pct < 35:
-        label = "WEAK_MARKET"
-    else:
-        label = "MIXED"
-
-    return {
-        "label": label,
-        "sample_size": total,
-        "bullish_ma20_pct": round(bullish_ma20_pct, 1),
-        "bullish_ma50_pct": round(bullish_ma50_pct, 1),
-        "momentum_pct": round(momentum_pct, 1),
-        "expansion_pct": round(expansion_pct, 1),
-        "breakout_count": 0,
-        "pullback_count": 0
-    }
-
-def get_market_snapshot(symbol, regime_label=None):
+def get_market_snapshot(symbol):
     symbol = symbol.upper().strip()
     if symbol in unsupported_symbols:
         return None
@@ -454,32 +403,22 @@ def get_market_snapshot(symbol, regime_label=None):
         pullback_ideal = (
             trend_bias == "bullish"
             and pd.notna(ma20)
-            and abs(close - ma20) / ma20 <= pullback_ma20_dist
-            and pullback_ideal_rsi_min <= rsi <= pullback_ideal_rsi_max
+            and abs(close - ma20) / ma20 <= 0.03
+            and 48 <= rsi <= 62
             and close >= ma20 * 0.99
-            and macd_hist >= -2.5
+            and macd_hist >= -2.0
             and value_traded >= MIN_VALUE_TRADED
         )
         pullback_deep = (
             trend_bias != "bearish"
             and pd.notna(ma50)
-            and abs(close - ma50) / ma50 <= pullback_ma50_dist
-            and pullback_deep_rsi_min <= rsi <= pullback_deep_rsi_max
-            and close >= ma50 * pullback_ma50_floor
-            and macd >= signal * 0.82
+            and abs(close - ma50) / ma50 <= 0.05
+            and 40 <= rsi <= 58
+            and close >= ma50 * 0.985
+            and macd >= signal * 0.85
             and value_traded >= MIN_VALUE_TRADED
         )
         ma20_distance_pct = ((close - ma20) / ma20) * 100 if ma20 else 0
-
-        pullback_friendly = regime_label == "PULLBACK_FRIENDLY"
-        pullback_ideal_rsi_min = 45 if pullback_friendly else 48
-        pullback_ideal_rsi_max = 65 if pullback_friendly else 62
-        pullback_deep_rsi_min = 38 if pullback_friendly else 40
-        pullback_deep_rsi_max = 60 if pullback_friendly else 58
-        pullback_ma20_dist = 0.04 if pullback_friendly else 0.03
-        pullback_ma50_dist = 0.065 if pullback_friendly else 0.05
-        pullback_ma50_floor = 0.98 if pullback_friendly else 0.985
-
         breakout_follow_through = (
             breakout_attempt and not fake_breakout and volume_score >= 0 and trend_bias == "bullish"
             and close > (base_high if base_high else recent_high) * 1.01
@@ -514,7 +453,7 @@ def get_market_snapshot(symbol, regime_label=None):
             return None
         if trend_bias == "bearish" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             return None
-        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        if dead_market and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             return None
         if bad_sideway and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
             return None
@@ -529,8 +468,6 @@ def get_market_snapshot(symbol, regime_label=None):
         if setup == "BREAKOUT_FOLLOW_THROUGH" and change_pct > 6.5:
             return None
         if timing == "LATE" and setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
-            return None
-        if timing == "LATE" and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"] and not pullback_friendly:
             return None
 
         bid_low, bid_high, _ = build_entry_zone(setup, close, ma20, ma50, base_low, base_high)
@@ -626,8 +563,6 @@ def get_market_snapshot(symbol, regime_label=None):
         if upper_wick_pct > 0.35:
             penalty += 6
         if trend_bias == "neutral":
-            penalty += 4
-        if dead_market and setup in ["PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             penalty += 4
         if setup == "BREAKOUT_RETEST_READY":
             penalty += 4
@@ -813,7 +748,7 @@ def get_action_hint(data):
     if status == "WATCH PULLBACK":
         return "Aksi: pantau trigger mikro sebelum entry."
     if status == "WATCH DEEP PULLBACK":
-        return "Aksi: tunggu bounce / micro breakout dari area bawah, boleh pantau lebih dekat saat regime pullback."
+        return "Aksi: tunggu bounce / micro breakout dari area bawah."
     if status == "MOMENTUM CONTINUATION":
         return "Aksi: boleh cicil kecil cepat, disiplin ambil profit."
     if status == "OVEREXTENDED MOMENTUM":
@@ -1202,11 +1137,8 @@ def scan_dual_path():
     raw_breakout = []
     raw_pullback = []
 
-    pre_regime = detect_market_regime_from_watchlist()
-    pre_regime_label = pre_regime.get("label", "MIXED")
-
     for symbol in WATCHLIST:
-        data = get_market_snapshot(symbol, regime_label=pre_regime_label)
+        data = get_market_snapshot(symbol)
         if not data:
             continue
         combined.append(data)
@@ -1311,12 +1243,11 @@ def process_dual_path_scan(notify=False):
     digest = dual_scan_hash(result)
     old_digest = state.get("last_dual_scan_hash", "")
 
-    if notify and chat_id_global:
-        if digest != old_digest:
-            msg = build_dual_path_text(result) + "\n\n" + build_status_text()
-            send_message(chat_id_global, msg)
-            state["last_dual_scan_hash"] = digest
-            save_state()
+    if notify and chat_id_global and digest != old_digest:
+        msg = build_dual_path_text(result) + "\n\n" + build_status_text()
+        send_message(chat_id_global, msg)
+        state["last_dual_scan_hash"] = digest
+        save_state()
 
     return result
 
@@ -1367,22 +1298,18 @@ def try_autoscan():
 
     if not state.get("autoscan"):
         return
-
     if not is_market_open():
         return
-
     if not chat_id_global:
         return
 
     minute_key = should_run_scan()
     if minute_key is None:
         return
-
     if state.get("last_scan_minute_key") == minute_key:
         return
 
     process_dual_path_scan(notify=True)
-
     state["last_scan_minute_key"] = minute_key
     save_state()
 
@@ -1391,7 +1318,7 @@ def handle_command(chat_id, text):
     raw = text.strip()
     cmd = raw.lower()
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FULL COMBINED + AUTOSCAN FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot FULL COMBINED + RS + ACTION HINT + AUTOSCAN FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
