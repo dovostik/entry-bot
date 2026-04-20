@@ -23,6 +23,7 @@ UNSUPPORTED_SYMBOLS_FILE = "unsupported_symbols.json"
 SIGNAL_JOURNAL_FILE = "signal_journal.json"
 SIGNAL_EVAL_FILE = "signal_evaluations.json"
 QUICK_POOL_FILE = "quick_pool.json"
+UPDATE_ID_FILE = "last_update_id.json"
 
 chat_id_global = None
 state = {
@@ -33,6 +34,7 @@ state = {
 }
 unsupported_symbols = set()
 relative_strength_map = {}
+INSTANCE_ID = os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("RAILWAY_REPLICA_ID") or os.getenv("HOSTNAME") or "local"
 
 MIN_VALUE_TRADED = 10000000000
 MIN_DAILY_RANGE_PCT = 2.0
@@ -56,6 +58,16 @@ def load_json_file(path, default):
 def save_json_file(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+
+def load_last_update_id():
+    data = load_json_file(UPDATE_ID_FILE, {})
+    try:
+        return int(data.get("last_update_id", 0))
+    except Exception:
+        return 0
+
+def save_last_update_id(value):
+    save_json_file(UPDATE_ID_FILE, {"last_update_id": int(value)})
 
 def load_chat():
     global chat_id_global
@@ -160,9 +172,14 @@ def get_quick_scan_universe():
         out.append(s)
     return out[:QUICK_POOL_MAX]
 
+def build_instance_prefix():
+    short_id = str(INSTANCE_ID)[-8:]
+    return f"[inst:{short_id}]"
+
 def send_message(chat_id, text):
     try:
-        requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=30)
+        final_text = f"{build_instance_prefix()}\n{text}"
+        requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": final_text}, timeout=30)
     except Exception:
         pass
 
@@ -1469,10 +1486,12 @@ def try_autoscan():
 
 def build_debug_watchlist_text():
     lines = ["DEBUG WATCHLIST", ""]
+    lines.append(f"Instance ID: {INSTANCE_ID}")
     lines.append(f"Watchlist aktif: {len(WATCHLIST)} saham")
     pool = get_quick_scan_universe()
     lines.append(f"Quick pool: {len(pool)} saham")
     lines.append(f"Unsupported symbols: {len(unsupported_symbols)}")
+    lines.append(f"Last update id: {last_update_id}")
     lines.append("")
     lines.append("Preview watchlist:")
     preview = WATCHLIST[:10]
@@ -1495,7 +1514,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + PASS MARKET MERAH + DEBUG aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + PASS MARKET MERAH + DEBUG + INSTANCE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
@@ -1561,12 +1580,14 @@ def handle_command(chat_id, text):
 load_chat()
 load_state()
 load_unsupported_symbols()
+last_update_id = load_last_update_id()
 
 while True:
     try:
         res = requests.get(f"{URL}/getUpdates", params={"offset": last_update_id + 1}, timeout=30).json()
         for update in res.get("result", []):
             last_update_id = update["update_id"]
+            save_last_update_id(last_update_id)
             if "message" in update:
                 chat_id = update["message"]["chat"]["id"]
                 text = update["message"].get("text", "")
