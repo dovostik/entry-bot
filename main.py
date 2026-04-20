@@ -135,6 +135,8 @@ def refresh_quick_pool(result):
         symbols.append(item["data"]["symbol"])
     for item in result.get("pullback", []):
         symbols.append(item["data"]["symbol"])
+    for item in result.get("pass_market_merah", []):
+        symbols.append(item["data"]["symbol"])
     for s in state.get("active_candidates", {}).keys():
         symbols.append(s)
     old_pool = load_quick_pool()
@@ -954,6 +956,8 @@ def get_action_hint(data):
         return "Aksi: hindari entry baru, tunggu pullback sehat."
     if status == "WATCH MOMENTUM":
         return "Aksi: tunggu micro pullback, jangan kejar candle tinggi."
+    if data.get("pass_market_merah", False):
+        return "Aksi: saham kuat saat market lemah, masuk radar pantau ketat."
     return "Aksi: wait and see, belum ada eksekusi valid."
 
 def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
@@ -974,6 +978,52 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Alasan: {data['reason']}",
         get_action_hint(data)
     ])
+
+
+def score_pass_market_merah(data, regime_label):
+    score = int(data.get("score", 0))
+    if regime_label in ["MIXED", "PULLBACK_FRIENDLY", "WEAK_MARKET"]:
+        score += 6
+    if data.get("rs_label") in ["LEADER STRONG", "EMERGING LEADER", "PULLBACK LEADER"]:
+        score += 8
+    if data.get("trend_bias") == "bullish":
+        score += 6
+    if data.get("close", 0) >= data.get("ma20", data.get("close", 0)):
+        score += 5
+    if data.get("close", 0) >= data.get("ma50", data.get("close", 0)):
+        score += 4
+    if abs(float(data.get("change_pct", 0))) <= 2.5:
+        score += 4
+    if data.get("volume") == "Kuat":
+        score += 3
+    if data.get("setup") in ["PULLBACK_IDEAL", "PULLBACK_DEEP", "SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE"]:
+        score += 4
+    return score
+
+def build_pass_market_merah_candidates(combined, regime_label):
+    out = []
+    for data in combined:
+        if regime_label not in ["MIXED", "PULLBACK_FRIENDLY", "WEAK_MARKET"]:
+            continue
+        if data.get("trend_bias") == "bearish":
+            continue
+        if data.get("close", 0) < data.get("ma20", data.get("close", 0)) * 0.99:
+            continue
+        if data.get("rs_label") not in ["LEADER STRONG", "EMERGING LEADER", "PULLBACK LEADER"]:
+            continue
+        if data.get("change_pct", 0) < -3.0:
+            continue
+        if data.get("setup") == "OVEREXTENDED":
+            continue
+
+        score = score_pass_market_merah(data, regime_label)
+        out.append({
+            "data": data,
+            "rank_score": score
+        })
+
+    out.sort(key=lambda x: x["rank_score"], reverse=True)
+    return out[:TOP_PER_PATH]
 
 def build_market_regime_header(regime):
     return "\n".join([
@@ -1007,6 +1057,14 @@ def build_dual_path_text(result):
             lines.append("")
     else:
         lines += ["Tidak ada kandidat pullback.", ""]
+    lines.append("TOP PASS MARKET MERAH")
+    if result.get("pass_market_merah"):
+        for i, item in enumerate(result["pass_market_merah"], start=1):
+            item["data"]["pass_market_merah"] = True
+            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Defensive', item['rank_score'], item.get('rank_score'))}")
+            lines.append("")
+    else:
+        lines += ["Tidak ada kandidat pass market merah.", ""]
     return "\n".join(lines).strip()
 
 def load_signal_journal():
@@ -1221,9 +1279,12 @@ def scan_dual_path(universe=None, quick_mode=False):
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     combined.sort(key=lambda x: (action_priority(x), x["score"]), reverse=True)
 
+    pass_market_merah = build_pass_market_merah_candidates(combined, regime_label)
+
     return {
         "breakout": breakout_candidates[:TOP_PER_PATH],
         "pullback": pullback_candidates[:TOP_PER_PATH],
+        "pass_market_merah": pass_market_merah,
         "combined": combined[:TOP_COMBINED],
         "market_regime": regime,
         "quick_mode": quick_mode,
@@ -1255,6 +1316,9 @@ def dual_scan_hash(result):
     for item in result.get("pullback", []):
         d = item["data"]
         parts.append(f"P:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
+    for item in result.get("pass_market_merah", []):
+        d = item["data"]
+        parts.append(f"D:{d['symbol']}:{decision_status(d)}:{item.get('rank_score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     for d in result.get("combined", []):
         parts.append(f"C:{d['symbol']}:{decision_status(d)}:{d.get('score',0)}:{d.get('close',0)}:{d.get('setup','-')}")
     return "|".join(parts)
@@ -1408,7 +1472,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + FULL MANUAL WIB FIX aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
+        send_message(chat_id, "Entry Bot QUICK AUTOSCAN + PASS MARKET MERAH aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/journaltoday\n/journalsummary\n/journalstock KODE")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
