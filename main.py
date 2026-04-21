@@ -196,7 +196,7 @@ def calc_distance_pct(a, b):
 
 def refresh_quick_pool(result):
     symbols = []
-    for group_name in ["breakout", "pullback", "pass_market_merah"]:
+    for group_name in ["favorite", "deep_pullback", "breakout", "no_chase", "pass_market_merah"]:
         for item in result.get(group_name, []):
             symbols.append(item["data"]["symbol"])
     for d in result.get("combined", []):
@@ -1255,26 +1255,48 @@ def build_dual_path_text(result):
     if regime:
         lines.append(build_market_regime_header(regime).strip())
         lines.append("")
-    lines.append("AUTOSCAN DUA JALUR")
+
+    lines.append("AUTOSCAN 2 TAHAP ACCUMULATION FIRST")
     lines.append(hr())
-    lines.append("TOP BREAKOUT KERAS")
-    if result["breakout"]:
-        for i, item in enumerate(result["breakout"], start=1):
+
+    lines.append("TOP AKUMULASI FAVORIT")
+    if result.get("favorite"):
+        for i, item in enumerate(result["favorite"], start=1):
             lines.append(f"{i}.")
-            lines.append(format_candidate_block(item['data'], 'Score Breakout', item['rank_score'], item.get('base_rank_score')))
+            lines.append(format_candidate_block(item["data"], "Score Favorit", item["rank_score"], item.get("rank_score")))
             lines.append(hr())
     else:
-        lines.append("Tidak ada kandidat breakout.")
+        lines.append("Tidak ada kandidat akumulasi favorit.")
         lines.append(hr())
 
-    lines.append("TOP PULLBACK SUPPORT")
-    if result["pullback"]:
-        for i, item in enumerate(result["pullback"], start=1):
+    lines.append("TOP PULLBACK DALAM")
+    if result.get("deep_pullback"):
+        for i, item in enumerate(result["deep_pullback"], start=1):
             lines.append(f"{i}.")
-            lines.append(format_candidate_block(item['data'], 'Score Pullback', item['rank_score'], item.get('base_rank_score')))
+            lines.append(format_candidate_block(item["data"], "Score Pullback Dalam", item["rank_score"], item.get("rank_score")))
             lines.append(hr())
     else:
-        lines.append("Tidak ada kandidat pullback.")
+        lines.append("Tidak ada kandidat pullback dalam.")
+        lines.append(hr())
+
+    lines.append("TOP BREAKOUT LANJUTAN")
+    if result.get("breakout"):
+        for i, item in enumerate(result["breakout"], start=1):
+            lines.append(f"{i}.")
+            lines.append(format_candidate_block(item["data"], "Score Breakout", item["rank_score"], item.get("rank_score")))
+            lines.append(hr())
+    else:
+        lines.append("Tidak ada kandidat breakout lanjutan.")
+        lines.append(hr())
+
+    lines.append("TOP NO CHASE")
+    if result.get("no_chase"):
+        for i, item in enumerate(result["no_chase"], start=1):
+            lines.append(f"{i}.")
+            lines.append(format_candidate_block(item["data"], "Score No Chase", item["rank_score"], item.get("rank_score")))
+            lines.append(hr())
+    else:
+        lines.append("Tidak ada kandidat no chase.")
         lines.append(hr())
 
     lines.append("TOP PASS MARKET MERAH")
@@ -1282,7 +1304,7 @@ def build_dual_path_text(result):
         for i, item in enumerate(result["pass_market_merah"], start=1):
             item["data"]["pass_market_merah"] = True
             lines.append(f"{i}.")
-            lines.append(format_candidate_block(item['data'], 'Score Defensive', item['rank_score'], item.get('rank_score')))
+            lines.append(format_candidate_block(item["data"], "Score Defensive", item["rank_score"], item.get("rank_score")))
             lines.append(hr())
     else:
         lines.append("Tidak ada kandidat pass market merah.")
@@ -1472,7 +1494,24 @@ def should_notify_quick_update(prev_active, new_combined, old_digest, new_digest
 
 def process_dual_path_scan(notify=False, quick_mode=False, use_cache_for_full=True):
     if quick_mode and not is_market_open():
-        return {"breakout": [], "pullback": [], "pass_market_merah": [], "combined": [], "market_regime": {"label":"MARKET_CLOSED", "sample_size":0, "bullish_ma20_pct":0.0, "bullish_ma50_pct":0.0, "momentum_pct":0.0, "expansion_pct":0.0, "breakout_count":0, "pullback_count":0}}
+        return {
+            "favorite": [],
+            "deep_pullback": [],
+            "breakout": [],
+            "no_chase": [],
+            "pass_market_merah": [],
+            "combined": [],
+            "market_regime": {
+                "label":"MARKET_CLOSED",
+                "sample_size":0,
+                "bullish_ma20_pct":0.0,
+                "bullish_ma50_pct":0.0,
+                "momentum_pct":0.0,
+                "expansion_pct":0.0,
+                "breakout_count":0,
+                "pullback_count":0
+            }
+        }
 
     prev_active = dict(state.get("active_candidates", {}))
 
