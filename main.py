@@ -582,6 +582,52 @@ def detect_market_regime_from_watchlist():
             regime_data.append(snap)
     return calc_market_regime(regime_data, [])
 
+def calc_market_regime_from_stage1(stage1_rows, candidate_data):
+    total = len(stage1_rows)
+    if total == 0:
+        return {
+            "label": "NO_DATA",
+            "sample_size": 0,
+            "bullish_ma20_pct": 0.0,
+            "bullish_ma50_pct": 0.0,
+            "momentum_pct": 0.0,
+            "expansion_pct": 0.0,
+            "breakout_count": 0,
+            "pullback_count": 0
+        }
+
+    bullish_ma20 = sum(1 for d in stage1_rows if d["close"] > d["ma20"])
+    bullish_ma50 = sum(1 for d in stage1_rows if d["close"] > d["ma50"])
+    momentum = sum(1 for d in stage1_rows if d["rsi"] > 50 and d["macd_hist"] > 0)
+    expansion = sum(1 for d in stage1_rows if d["change_pct"] > 1 and d["volume_label"] == "Kuat")
+    breakout_count = sum(1 for d in candidate_data if d.get("setup") in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY"])
+    pullback_count = sum(1 for d in candidate_data if d.get("setup") in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"])
+
+    bullish_ma20_pct = bullish_ma20 / total * 100
+    bullish_ma50_pct = bullish_ma50 / total * 100
+    momentum_pct = momentum / total * 100
+    expansion_pct = expansion / total * 100
+
+    if bullish_ma20_pct >= 55 and momentum_pct >= 50 and expansion_pct >= 12 and breakout_count >= pullback_count:
+        label = "BREAKOUT_FRIENDLY"
+    elif bullish_ma20_pct >= 50 and momentum_pct >= 40 and expansion_pct < 12 and pullback_count >= breakout_count:
+        label = "PULLBACK_FRIENDLY"
+    elif bullish_ma20_pct < 40 and momentum_pct < 35:
+        label = "WEAK_MARKET"
+    else:
+        label = "MIXED"
+
+    return {
+        "label": label,
+        "sample_size": total,
+        "bullish_ma20_pct": round(bullish_ma20_pct, 1),
+        "bullish_ma50_pct": round(bullish_ma50_pct, 1),
+        "momentum_pct": round(momentum_pct, 1),
+        "expansion_pct": round(expansion_pct, 1),
+        "breakout_count": breakout_count,
+        "pullback_count": pullback_count
+    }
+
 def calc_market_regime(regime_data, candidate_data):
     total = len(regime_data)
     if total == 0:
@@ -931,7 +977,8 @@ def get_market_snapshot(symbol, regime_label=None):
             "no_chase_reason": "",
             "stage1_label": "-",
             "stage1_reason": "",
-            "stage1_score": 0
+            "stage1_score": 0,
+            "bucket_hint": "-"
         }
     except Exception:
         return None
@@ -1224,6 +1271,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Confidence: {data['confidence']}",
         f"Flags: {'NO CHASE' if data.get('no_chase', False) else '-'}",
         f"Stage1: {data.get('stage1_label','-')} | {data.get('stage1_score',0)}",
+        f"Bucket Hint: {data.get('bucket_hint','-')}",
         f"RS: {data.get('rs_label','N/A')} ({data.get('rs_5',0):+.2f}% /5d | {data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
         score_line,
@@ -1269,7 +1317,7 @@ def build_dual_path_text(result):
         lines.append("Tidak ada kandidat akumulasi favorit.")
         lines.append(hr())
 
-    lines.append("TOP PULLBACK DALAM")
+    lines.append("TOP PULLBACK / SUPPORT")
     if result.get("deep_pullback"):
         for i, item in enumerate(result["deep_pullback"], start=1):
             lines.append(f"{i}.")
@@ -1333,24 +1381,36 @@ def enrich_stage2_candidate(row):
     full["stage1_reason"] = row.get("stage1_reason", "-")
     return full
 
-def build_stage2_buckets(rows):
+def build_stage2_buckets(rows, stage1_rows):
     favorite = []
     deep_pullback = []
     breakout = []
     no_chase = []
 
-    regime = calc_market_regime([snap for snap in [get_regime_snapshot(x["symbol"]) for x in rows] if snap], rows)
+    regime = calc_market_regime_from_stage1(stage1_rows, rows)
     regime_label = regime.get("label", "MIXED")
 
     for data in rows:
         if data.get("no_chase", False):
             no_chase.append({"data": data, "rank_score": int(data.get("score", 0))})
             continue
-        if data.get("stage1_label") in ["STAGE1_ACCUMULATION", "STAGE1_BREAKOUT_EDGE"]:
+        if data.get("stage1_label") == "STAGE1_ACCUMULATION":
+            data["bucket_hint"] = "AKUMULASI_FAVORIT"
             rank_score = score_favorite_accumulation(data)
             favorite.append({"data": data, "rank_score": rank_score})
             continue
-        if data.get("setup") == "PULLBACK_DEEP" or data.get("stage1_label") == "STAGE1_PULLBACK":
+        if data.get("stage1_label") == "STAGE1_BREAKOUT_EDGE":
+            data["bucket_hint"] = "AKUMULASI_BREAKOUT_EDGE"
+            rank_score = score_favorite_accumulation(data)
+            favorite.append({"data": data, "rank_score": rank_score})
+            continue
+        if data.get("setup") == "PULLBACK_DEEP":
+            data["bucket_hint"] = "PULLBACK_DALAM"
+            rank_score = score_pullback_path(data)
+            deep_pullback.append({"data": data, "rank_score": rank_score})
+            continue
+        if data.get("stage1_label") == "STAGE1_PULLBACK":
+            data["bucket_hint"] = "PULLBACK_SEHAT"
             rank_score = score_pullback_path(data)
             deep_pullback.append({"data": data, "rank_score": rank_score})
             continue
@@ -1390,7 +1450,7 @@ def scan_engine_v2(symbols):
         if full:
             enriched.append(full)
 
-    return build_stage2_buckets(enriched)
+    return build_stage2_buckets(enriched, stage1_rows)
 
 def scan_engine(symbols):
     pre_regime = detect_market_regime_from_watchlist()
@@ -1639,7 +1699,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FINAL 2 TAHAP ACCUMULATION FIRST aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot FINAL 2 TAHAP ACCUMULATION FIRST V2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
