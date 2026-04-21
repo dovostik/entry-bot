@@ -904,6 +904,9 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         get_action_hint(data)
     ])
 
+def hr():
+    return "--------------------"
+
 def build_market_regime_header(regime):
     return "\n".join([
         f"MARKET REGIME: {regime['label']}",
@@ -922,28 +925,39 @@ def build_dual_path_text(result):
     if regime:
         lines.append(build_market_regime_header(regime).strip())
         lines.append("")
-    lines += ["AUTOSCAN DUA JALUR", "", "TOP BREAKOUT KERAS"]
+    lines.append("AUTOSCAN DUA JALUR")
+    lines.append(hr())
+    lines.append("TOP BREAKOUT KERAS")
     if result["breakout"]:
         for i, item in enumerate(result["breakout"], start=1):
-            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Breakout', item['rank_score'], item.get('base_rank_score'))}")
-            lines.append("")
+            lines.append(f"{i}.")
+            lines.append(format_candidate_block(item['data'], 'Score Breakout', item['rank_score'], item.get('base_rank_score')))
+            lines.append(hr())
     else:
-        lines += ["Tidak ada kandidat breakout.", ""]
+        lines.append("Tidak ada kandidat breakout.")
+        lines.append(hr())
+
     lines.append("TOP PULLBACK SUPPORT")
     if result["pullback"]:
         for i, item in enumerate(result["pullback"], start=1):
-            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Pullback', item['rank_score'], item.get('base_rank_score'))}")
-            lines.append("")
+            lines.append(f"{i}.")
+            lines.append(format_candidate_block(item['data'], 'Score Pullback', item['rank_score'], item.get('base_rank_score')))
+            lines.append(hr())
     else:
-        lines += ["Tidak ada kandidat pullback.", ""]
+        lines.append("Tidak ada kandidat pullback.")
+        lines.append(hr())
+
     lines.append("TOP PASS MARKET MERAH")
     if result.get("pass_market_merah"):
         for i, item in enumerate(result["pass_market_merah"], start=1):
             item["data"]["pass_market_merah"] = True
-            lines.append(f"{i}. {format_candidate_block(item['data'], 'Score Defensive', item['rank_score'], item.get('rank_score'))}")
-            lines.append("")
+            lines.append(f"{i}.")
+            lines.append(format_candidate_block(item['data'], 'Score Defensive', item['rank_score'], item.get('rank_score')))
+            lines.append(hr())
     else:
-        lines += ["Tidak ada kandidat pass market merah.", ""]
+        lines.append("Tidak ada kandidat pass market merah.")
+        lines.append(hr())
+
     return "\n".join(lines).strip()
 
 def scan_engine(symbols):
@@ -1087,7 +1101,7 @@ def build_status_text():
     if not active:
         return "Belum ada kandidat aktif."
     items = sorted(active.values(), key=lambda x: x.get("rank", 999))
-    lines = ["STATUS KANDIDAT AKTIF", ""]
+    lines = ["STATUS KANDIDAT AKTIF", hr()]
     for item in items[:12]:
         lines.append(f"{item['symbol']} | {item.get('decision_status','-')} | rank {item.get('rank','-')} | score {item.get('score','-')}")
     return "\n".join(lines)
@@ -1170,7 +1184,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
