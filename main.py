@@ -742,7 +742,9 @@ def get_market_snapshot(symbol, regime_label=None):
             "rs_bonus": 0,
             "rs_5": 0.0,
             "rs_20": 0.0,
-            "pass_market_merah": False
+            "pass_market_merah": False,
+            "no_chase": False,
+            "no_chase_reason": ""
         }
     except Exception:
         return None
@@ -829,6 +831,59 @@ def apply_market_regime_bonus(data, base_score, path_type, regime_label):
             score -= 1
     return score
 
+def detect_no_chase_breakout(data):
+    change_pct = float(data.get("change_pct", 0) or 0)
+    close = float(data.get("close", 0) or 0)
+    trigger = float(data.get("trigger", close) or close)
+    bid_high = float(data.get("bid_high", close) or close)
+    ma20 = float(data.get("ma20", close) or close)
+
+    move_from_trigger_pct = ((close - trigger) / trigger) * 100 if trigger else 0.0
+    move_from_bid_pct = ((close - bid_high) / bid_high) * 100 if bid_high else 0.0
+    ma20_gap_pct = ((close - ma20) / ma20) * 100 if ma20 else 0.0
+
+    no_chase = False
+    reasons = []
+    penalty = 0
+
+    if change_pct >= 15:
+        no_chase = True
+        penalty += 14
+        reasons.append("kenaikan harian terlalu tinggi")
+    elif change_pct >= 12:
+        no_chase = True
+        penalty += 10
+        reasons.append("sudah terlalu kencang")
+
+    if move_from_trigger_pct >= 6:
+        no_chase = True
+        penalty += 10
+        reasons.append("terlalu jauh dari trigger")
+    elif move_from_trigger_pct >= 4:
+        no_chase = True
+        penalty += 6
+        reasons.append("mulai jauh dari trigger")
+
+    if move_from_bid_pct >= 5:
+        no_chase = True
+        penalty += 8
+        reasons.append("sudah jauh di atas bid zone")
+
+    if ma20_gap_pct >= 10:
+        no_chase = True
+        penalty += 8
+        reasons.append("terlalu jauh dari MA20")
+    elif ma20_gap_pct >= 8:
+        no_chase = True
+        penalty += 5
+        reasons.append("sudah renggang dari MA20")
+
+    return {
+        "no_chase": no_chase,
+        "penalty": penalty,
+        "reason": ", ".join(reasons[:3]) if reasons else ""
+    }
+
 def score_pass_market_merah(data, regime_label):
     score = int(data.get("score", 0))
     if regime_label in ["MIXED", "PULLBACK_FRIENDLY", "WEAK_MARKET"]:
@@ -854,6 +909,8 @@ def build_pass_market_merah_candidates(combined, regime_label):
     for data in combined:
         if regime_label not in ["MIXED", "PULLBACK_FRIENDLY", "WEAK_MARKET"]:
             continue
+        if data.get("no_chase", False):
+            continue
         if data.get("trend_bias") == "bearish":
             continue
         if data.get("close", 0) < data.get("ma20", data.get("close", 0)) * 0.99:
@@ -868,6 +925,9 @@ def build_pass_market_merah_candidates(combined, regime_label):
     return out[:TOP_PER_PATH]
 
 def get_action_hint(data):
+    if data.get("no_chase", False):
+        extra = data.get("no_chase_reason", "")
+        return f"Aksi: NO CHASE, tunggu retest / base ulang. {extra}".strip()
     if data.get("pass_market_merah", False):
         return "Aksi: saham kuat saat market lemah, masuk radar pantau ketat."
     status = decision_status(data)
@@ -894,6 +954,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
+        f"Flags: {'NO CHASE' if data.get('no_chase', False) else '-'}",
         f"RS: {data.get('rs_label','N/A')} ({data.get('rs_5',0):+.2f}% /5d | {data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
         score_line,
@@ -990,8 +1051,14 @@ def scan_engine(symbols):
 
     for data in combined:
         if data["setup"] in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY"]:
+            no_chase_info = detect_no_chase_breakout(data)
+            data["no_chase"] = no_chase_info["no_chase"]
+            data["no_chase_reason"] = no_chase_info["reason"]
+
             base_rank = score_breakout_path(data)
             final_rank = apply_market_regime_bonus(data, base_rank, "breakout", regime_label)
+            if no_chase_info["no_chase"]:
+                final_rank -= int(no_chase_info["penalty"])
             breakout_candidates.append({"data": data, "rank_score": final_rank, "base_rank_score": base_rank})
         elif data["setup"] in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
             base_rank = score_pullback_path(data)
@@ -1184,7 +1251,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT + NO CHASE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
