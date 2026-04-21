@@ -1470,7 +1470,8 @@ def process_dual_path_scan(notify=False, quick_mode=False, use_cache_for_full=Tr
         if cached:
             result = cached
         else:
-            result = scan_engine(WATCHLIST)
+            full_universe = get_market_live_full_scan_universe() if is_market_open() else WATCHLIST
+            result = scan_engine(full_universe)
             save_full_scan_cache(result)
     else:
         universe = get_quick_scan_universe() if quick_mode else WATCHLIST
