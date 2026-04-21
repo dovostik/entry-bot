@@ -224,6 +224,37 @@ def safe_yahoo_history(symbol, period="1y", interval="1d"):
     except Exception:
         return None
 
+def get_intraday_overlay(symbol, prev_close):
+    if not is_market_open():
+        return None
+    try:
+        hist = safe_yahoo_history(symbol, period="1d", interval="5m")
+        if hist is None or hist.empty:
+            hist = safe_yahoo_history(symbol, period="5d", interval="5m")
+        if hist is None or hist.empty:
+            return None
+
+        day = hist.copy()
+        latest = day.iloc[-1]
+        latest_price = float(latest["Close"])
+        day_open = float(day["Open"].iloc[0])
+        day_high = float(day["High"].max())
+        day_low = float(day["Low"].min())
+        day_volume = float(day["Volume"].sum())
+        change_pct = ((latest_price - prev_close) / prev_close) * 100 if prev_close else 0.0
+
+        return {
+            "close": latest_price,
+            "open": day_open,
+            "high": day_high,
+            "low": day_low,
+            "volume": day_volume,
+            "change_pct": round(change_pct, 2),
+            "mode": "LIVE_INTRADAY"
+        }
+    except Exception:
+        return None
+
 def calc_indicators(df):
     out = df.copy()
     out["MA20"] = out["Close"].rolling(20).mean()
@@ -521,6 +552,19 @@ def get_market_snapshot(symbol, regime_label=None):
 
         change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0
         prev_change_pct = ((prev_close - prev2_close) / prev2_close) * 100 if prev2_close else 0
+
+        intraday_overlay = get_intraday_overlay(symbol, prev_close)
+        data_mode = "DAILY_CLOSE"
+        if intraday_overlay:
+            close = float(intraday_overlay["close"])
+            open_price = float(intraday_overlay["open"])
+            high = float(intraday_overlay["high"])
+            low = float(intraday_overlay["low"])
+            volume_today = float(intraday_overlay["volume"])
+            value_traded = close * volume_today
+            change_pct = float(intraday_overlay["change_pct"])
+            data_mode = intraday_overlay.get("mode", "LIVE_INTRADAY")
+
         daily_range_pct = ((high - low) / close) * 100 if close else 0
         if value_traded < MIN_VALUE_TRADED or daily_range_pct < MIN_DAILY_RANGE_PCT:
             return None
@@ -744,7 +788,8 @@ def get_market_snapshot(symbol, regime_label=None):
             "rs_20": 0.0,
             "pass_market_merah": False,
             "no_chase": False,
-            "no_chase_reason": ""
+            "no_chase_reason": "",
+            "data_mode": data_mode
         }
     except Exception:
         return None
@@ -954,6 +999,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Status: {decision_status(data)}",
         f"Setup: {data['setup']}",
         f"Confidence: {data['confidence']}",
+        f"Data Mode: {data.get('data_mode','DAILY_CLOSE')}",
         f"Flags: {'NO CHASE' if data.get('no_chase', False) else '-'}",
         f"RS: {data.get('rs_label','N/A')} ({data.get('rs_5',0):+.2f}% /5d | {data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
@@ -1251,7 +1297,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT + NO CHASE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT + NO CHASE + LIVE INTRADAY aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
