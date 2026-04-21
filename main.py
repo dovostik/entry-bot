@@ -789,7 +789,9 @@ def get_market_snapshot(symbol, regime_label=None):
             "pass_market_merah": False,
             "no_chase": False,
             "no_chase_reason": "",
-            "data_mode": data_mode
+            "data_mode": data_mode,
+            "accumulation_score": 0,
+            "accumulation_reason": ""
         }
     except Exception:
         return None
@@ -810,70 +812,82 @@ def decision_status(data):
     return "WATCH WAIT"
 
 def action_priority(data):
-    priority_map = {
-        "ACTIVE BID PULLBACK": 9,
-        "ACTIVE BID": 8,
-        "ACTIVE BID EARLY": 7,
-        "WAIT RETEST": 6,
-        "WATCH PULLBACK": 5,
-        "WATCH DEEP PULLBACK": 4,
-        "WATCH WAIT": 3,
-    }
-    return priority_map.get(decision_status(data), 0)
+    setup = data.get("setup", "")
+    if setup in ["SIDEWAY ACCUMULATION PREPARE", "SUPPORT BOUNCE PREPARE", "PULLBACK_IDEAL", "PULLBACK_DEEP"]:
+        base = 10
+    elif setup == "VALID_BREAKOUT_EXECUTE":
+        base = 6
+    elif setup == "BREAKOUT_RETEST_READY":
+        base = 4
+    else:
+        base = 2
+
+    if data.get("no_chase", False):
+        base -= 3
+    if decision_status(data) in ["ACTIVE BID", "ACTIVE BID PULLBACK"]:
+        base += 2
+    return base
 
 def score_breakout_path(data):
     score = int(data.get("score", 0))
     if data["setup"] == "VALID_BREAKOUT_EXECUTE":
-        score += 8
+        score += 4
     if data["setup"] == "BREAKOUT_RETEST_READY":
-        score += 6
+        score += 2
     if data["volume"] == "Kuat":
-        score += 6
+        score += 4
     if decision_status(data) == "ACTIVE BID EARLY":
-        score += 4
+        score += 2
     if data["confidence"] == "MEDIUM":
-        score += 4
+        score += 2
     if data["trend_bias"] == "bearish":
-        score -= 8
+        score -= 10
     score += int(data.get("rs_bonus", 0))
+    score += int(data.get("accumulation_score", 0) * 0.15)
     return score
 
 def score_pullback_path(data):
     score = int(data.get("score", 0))
     if data["setup"] == "SIDEWAY ACCUMULATION PREPARE":
-        score += 8
+        score += 14
     if data["setup"] == "SUPPORT BOUNCE PREPARE":
-        score += 6
-    if data["setup"] == "PULLBACK_IDEAL":
         score += 12
+    if data["setup"] == "PULLBACK_IDEAL":
+        score += 15
     if data["setup"] == "PULLBACK_DEEP":
-        score += 8
+        score += 10
     if decision_status(data) in ["ACTIVE BID", "ACTIVE BID PULLBACK"]:
-        score += 5
+        score += 7
     if data["timing"] == "EARLY":
-        score += 3
+        score += 5
     if data["trend_bias"] == "bearish":
-        score -= 8
+        score -= 10
     score += int(data.get("rs_bonus", 0))
+    score += int(data.get("accumulation_score", 0) * 0.45)
     return score
 
 def apply_market_regime_bonus(data, base_score, path_type, regime_label):
     score = int(base_score)
     if regime_label == "BREAKOUT_FRIENDLY":
         if path_type == "breakout":
-            score += 5
+            score += 2
         elif path_type == "pullback":
-            score -= 1
+            score += 1
     elif regime_label == "PULLBACK_FRIENDLY":
         if path_type == "pullback":
-            score += 5
+            score += 8
         elif path_type == "breakout":
-            score -= 1
+            score -= 6
     elif regime_label == "WEAK_MARKET":
         if path_type == "breakout":
-            score -= 3
+            score -= 8
         elif path_type == "pullback":
-            score -= 1
+            score -= 2
+    elif regime_label == "MIXED":
+        if path_type == "pullback":
+            score += 3
+        elif path_type == "breakout":
+            score -= 2
     return score
 
 def detect_no_chase_breakout(data):
@@ -929,6 +943,98 @@ def detect_no_chase_breakout(data):
         "reason": ", ".join(reasons[:3]) if reasons else ""
     }
 
+def calc_accumulation_score(data):
+    score = 0
+    notes = []
+
+    setup = data.get("setup", "")
+    timing = data.get("timing", "")
+    volume = data.get("volume", "")
+    trend_bias = data.get("trend_bias", "")
+    close = float(data.get("close", 0) or 0)
+    ma20 = float(data.get("ma20", close) or close)
+    ma50 = float(data.get("ma50", close) or close)
+    bid_high = float(data.get("bid_high", close) or close)
+    trigger = float(data.get("trigger", close) or close)
+    change_pct = float(data.get("change_pct", 0) or 0)
+
+    dist_ma20 = abs(close - ma20) / ma20 * 100 if ma20 else 0.0
+    dist_ma50 = abs(close - ma50) / ma50 * 100 if ma50 else 0.0
+    near_bid = close <= bid_high * 1.01 if bid_high else False
+    trigger_gap = ((trigger - close) / close) * 100 if close else 0.0
+
+    if setup == "SIDEWAY ACCUMULATION PREPARE":
+        score += 18
+        notes.append("base akumulasi rapi")
+    elif setup == "SUPPORT BOUNCE PREPARE":
+        score += 15
+        notes.append("pantulan support lebih aman")
+    elif setup == "PULLBACK_IDEAL":
+        score += 17
+        notes.append("pullback sehat dekat MA20")
+    elif setup == "PULLBACK_DEEP":
+        score += 13
+        notes.append("deep pullback dekat MA50")
+    elif setup == "VALID_BREAKOUT_EXECUTE":
+        score += 3
+    elif setup == "BREAKOUT_RETEST_READY":
+        score += 1
+
+    if timing == "EARLY":
+        score += 8
+        notes.append("timing masih awal")
+    elif timing == "MID":
+        score += 3
+
+    if volume == "Kuat":
+        score += 6
+        notes.append("volume mendukung")
+    elif volume == "Normal":
+        score += 2
+
+    if trend_bias == "bullish":
+        score += 6
+    elif trend_bias == "neutral":
+        score += 2
+    else:
+        score -= 8
+
+    if dist_ma20 <= 2.5:
+        score += 5
+        notes.append("dekat MA20")
+    elif dist_ma20 <= 5:
+        score += 2
+    else:
+        score -= 4
+
+    if dist_ma50 <= 4:
+        score += 4
+        notes.append("dekat MA50")
+    elif dist_ma50 > 8:
+        score -= 4
+
+    if near_bid:
+        score += 6
+        notes.append("dekat area bid")
+    else:
+        score -= 3
+
+    if 0 < trigger_gap <= 4:
+        score += 5
+    elif trigger_gap < 0:
+        score -= 4
+
+    if -2 <= change_pct <= 4:
+        score += 4
+    elif change_pct > 10:
+        score -= 10
+
+    if data.get("no_chase", False):
+        score -= 12
+
+    score += int(data.get("rs_bonus", 0))
+    return score, ", ".join(notes[:3]) if notes else "akumulasi / support"
+
 def score_pass_market_merah(data, regime_label):
     score = int(data.get("score", 0))
     if regime_label in ["MIXED", "PULLBACK_FRIENDLY", "WEAK_MARKET"]:
@@ -973,6 +1079,14 @@ def get_action_hint(data):
     if data.get("no_chase", False):
         extra = data.get("no_chase_reason", "")
         return f"Aksi: NO CHASE, tunggu retest / base ulang. {extra}".strip()
+    if data.get("setup") == "SIDEWAY ACCUMULATION PREPARE":
+        return "Aksi: kandidat akumulasi, cocok dipantau untuk cicil bertahap dekat support."
+    if data.get("setup") == "SUPPORT BOUNCE PREPARE":
+        return "Aksi: tunggu konfirmasi bounce kecil, lalu cicil dekat support."
+    if data.get("setup") == "PULLBACK_IDEAL":
+        return "Aksi: ini tipe favorit pullback sehat, utamakan area bid."
+    if data.get("setup") == "PULLBACK_DEEP":
+        return "Aksi: pullback dalam, cocok hanya jika muncul pantulan yang rapi."
     if data.get("pass_market_merah", False):
         return "Aksi: saham kuat saat market lemah, masuk radar pantau ketat."
     status = decision_status(data)
@@ -1001,6 +1115,7 @@ def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
         f"Confidence: {data['confidence']}",
         f"Data Mode: {data.get('data_mode','DAILY_CLOSE')}",
         f"Flags: {'NO CHASE' if data.get('no_chase', False) else '-'}",
+        f"Accumulation Score: {data.get('accumulation_score', 0)}",
         f"RS: {data.get('rs_label','N/A')} ({data.get('rs_5',0):+.2f}% /5d | {data.get('rs_20',0):+.2f}% /20d)",
         f"Harga: {data['close']:.2f} ({data['change_pct']:+.2f}%)",
         score_line,
@@ -1089,6 +1204,11 @@ def scan_engine(symbols):
         data["rs_5"] = rs.get("ret_5", 0.0)
         data["rs_20"] = rs.get("ret_20", 0.0)
 
+    for data in combined:
+        acc_score, acc_reason = calc_accumulation_score(data)
+        data["accumulation_score"] = acc_score
+        data["accumulation_reason"] = acc_reason
+
     regime = calc_market_regime(regime_data, combined)
     regime_label = regime.get("label", "MIXED")
 
@@ -1113,7 +1233,7 @@ def scan_engine(symbols):
 
     breakout_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
     pullback_candidates.sort(key=lambda x: x["rank_score"], reverse=True)
-    combined.sort(key=lambda x: (action_priority(x), x["score"]), reverse=True)
+    combined.sort(key=lambda x: (action_priority(x), x.get("accumulation_score", 0), x["score"]), reverse=True)
     pass_market_merah = build_pass_market_merah_candidates(combined, regime_label)
 
     return {
@@ -1297,7 +1417,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE + FORMAT + NO CHASE + LIVE INTRADAY aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot ACCUMULATION FIRST aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
