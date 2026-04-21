@@ -24,6 +24,7 @@ SIGNAL_JOURNAL_FILE = "signal_journal.json"
 SIGNAL_EVAL_FILE = "signal_evaluations.json"
 QUICK_POOL_FILE = "quick_pool.json"
 UPDATE_ID_FILE = "last_update_id.json"
+FULL_SCAN_CACHE_FILE = "full_scan_cache.json"
 
 INSTANCE_ID = os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("RAILWAY_REPLICA_ID") or os.getenv("HOSTNAME") or "local"
 
@@ -71,6 +72,32 @@ def load_last_update_id():
 
 def save_last_update_id(value):
     save_json_file(UPDATE_ID_FILE, {"last_update_id": int(value)})
+
+def load_full_scan_cache():
+    data = load_json_file(FULL_SCAN_CACHE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+def save_full_scan_cache(result):
+    payload = {
+        "saved_at": now_wib().strftime("%Y-%m-%d %H:%M:%S"),
+        "result": result
+    }
+    save_json_file(FULL_SCAN_CACHE_FILE, payload)
+
+def get_recent_full_scan_cache(max_age_seconds=180):
+    data = load_full_scan_cache()
+    saved_at = data.get("saved_at")
+    result = data.get("result")
+    if not saved_at or not isinstance(result, dict):
+        return None
+    try:
+        ts = datetime.strptime(saved_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=WIB)
+    except Exception:
+        return None
+    age = (now_wib() - ts).total_seconds()
+    if age <= max_age_seconds:
+        return result
+    return None
 
 def load_chat():
     global chat_id_global
@@ -1013,19 +1040,31 @@ def should_notify_quick_update(prev_active, new_combined, old_digest, new_digest
             return True
     return False
 
-def process_dual_path_scan(notify=False, quick_mode=False):
+def process_dual_path_scan(notify=False, quick_mode=False, use_cache_for_full=True):
     if quick_mode and not is_market_open():
         return {"breakout": [], "pullback": [], "pass_market_merah": [], "combined": [], "market_regime": {"label":"MARKET_CLOSED", "sample_size":0, "bullish_ma20_pct":0.0, "bullish_ma50_pct":0.0, "momentum_pct":0.0, "expansion_pct":0.0, "breakout_count":0, "pullback_count":0}}
 
-    universe = get_quick_scan_universe() if quick_mode else WATCHLIST
     prev_active = dict(state.get("active_candidates", {}))
-    result = scan_engine(universe)
-    sync_active_candidates_from_combined(result["combined"])
+
+    if not quick_mode and use_cache_for_full:
+        cached = get_recent_full_scan_cache(max_age_seconds=180)
+        if cached:
+            result = cached
+        else:
+            result = scan_engine(WATCHLIST)
+            save_full_scan_cache(result)
+    else:
+        universe = get_quick_scan_universe() if quick_mode else WATCHLIST
+        result = scan_engine(universe)
+        if not quick_mode:
+            save_full_scan_cache(result)
+
+    sync_active_candidates_from_combined(result.get("combined", []))
     refresh_quick_pool(result)
 
     digest = dual_scan_hash(result)
     old_digest = state.get("last_dual_scan_hash", "")
-    notify_needed = should_notify_quick_update(prev_active, result["combined"], old_digest, digest) if quick_mode else (digest != old_digest)
+    notify_needed = should_notify_quick_update(prev_active, result.get("combined", []), old_digest, digest) if quick_mode else (digest != old_digest)
 
     if notify and chat_id_global and notify_needed:
         prefix = "AUTOSCAN CEPAT\n\n" if quick_mode else ""
@@ -1070,6 +1109,10 @@ def build_debug_watchlist_text():
     lines.append(f"Quick pool: {len(pool)} saham")
     lines.append(f"Unsupported symbols: {len(unsupported_symbols)}")
     lines.append(f"Last update id: {last_update_id}")
+    cache = load_full_scan_cache()
+    lines.append(f"Full scan cache: {'ada' if cache.get('saved_at') else 'tidak ada'}")
+    if cache.get("saved_at"):
+        lines.append(f"Cache saved_at: {cache.get('saved_at')}")
     lines.append("")
     lines.append("Preview watchlist:")
     if WATCHLIST[:10]:
@@ -1127,7 +1170,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot CLEAN REBUILD aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot CLEAN REBUILD + CACHE aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
