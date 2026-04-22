@@ -1260,6 +1260,57 @@ def get_action_hint(data):
         return "Aksi: tunggu bounce / micro breakout dari area bawah."
     return "Aksi: wait and see, belum ada eksekusi valid."
 
+def derive_final_label(data):
+    if data.get("no_chase", False):
+        reason = str(data.get("no_chase_reason", "")).lower()
+        if "rejection" in reason or "distribusi" in reason:
+            return "RAWAN DISTRIBUSI"
+        return "MOMENTUM KUAT TAPI NO CHASE"
+
+    stage1 = data.get("stage1_label", "")
+    setup = data.get("setup", "")
+    status = decision_status(data)
+
+    if stage1 == "STAGE1_ACCUMULATION":
+        return "AKUMULASI FAVORIT"
+    if stage1 == "STAGE1_PULLBACK" or setup == "PULLBACK_DEEP":
+        return "PULLBACK SEHAT"
+    if stage1 == "STAGE1_BREAKOUT_EDGE":
+        return "BREAKOUT DEKAT BASE"
+    if setup in ["VALID_BREAKOUT_EXECUTE", "BREAKOUT_RETEST_READY"] and status in ["ACTIVE BID", "ACTIVE BID EARLY", "WAIT RETEST"]:
+        return "BREAKOUT DEKAT BASE"
+    return "PULLBACK SEHAT" if "PULLBACK" in setup else "BREAKOUT DEKAT BASE"
+
+def final_label_text(label):
+    mapping = {
+        "AKUMULASI FAVORIT": {
+            "status": "Akumulasi masih terlihat rapi dan harga belum terlalu jauh dari area aman.",
+            "summary": "Saham berada dekat support atau area bid dan struktur teknikal masih cukup sehat. Risiko relatif lebih kecil dibanding saham yang sudah naik lebih dulu.",
+            "execution": "AMAN DIPANTAU / BOLEH CICIL KECIL",
+        },
+        "PULLBACK SEHAT": {
+            "status": "Tren utama masih hidup, tapi saham sedang masuk fase istirahat sehat.",
+            "summary": "Harga sedang pullback ke area support, MA20, atau MA50 tanpa tanda rusak besar. Lebih cocok menunggu pantulan atau konfirmasi kecil sebelum eksekusi.",
+            "execution": "TUNGGU KONFIRMASI / CICIL SAAT PANTUL",
+        },
+        "BREAKOUT DEKAT BASE": {
+            "status": "Breakout sudah terlihat, tapi posisi harga masih cukup dekat dengan base.",
+            "summary": "Saham berhasil keluar dari area konsolidasi dan belum terlalu jauh dari trigger. Selama tidak langsung overextended, setup ini masih layak dipantau untuk entry kecil atau retest ringan.",
+            "execution": "BOLEH CICIL KECIL / TUNGGU RETEST RINGAN",
+        },
+        "MOMENTUM KUAT TAPI NO CHASE": {
+            "status": "Tenaga saham kuat dan sponsor terlihat jelas, tetapi posisi entry sudah tidak ideal.",
+            "summary": "Saham sedang bergerak kencang dan menarik secara momentum, tetapi harga sudah terlalu jauh dari area aman. Risiko chasing tinggi karena rawan retest tajam atau distribusi setelah markup cepat.",
+            "execution": "KUAT UNTUK RADAR, BUKAN UNTUK ENTRY",
+        },
+        "RAWAN DISTRIBUSI": {
+            "status": "Struktur mulai menunjukkan tekanan jual dan potensi distribusi.",
+            "summary": "Walau saham masih tampak aktif, rejection atas atau volume besar yang tidak diikuti close kuat bisa menandakan barang mulai dibuang. Ini bukan area ideal untuk entry baru.",
+            "execution": "RAWAN DISTRIBUSI / HANYA UNTUK HOLDER",
+        },
+    }
+    return mapping.get(label, mapping["PULLBACK SEHAT"])
+
 def format_candidate_block(data, score_name, rank_score, base_rank_score=None):
     score_line = f"{score_name}: {rank_score}"
     if base_rank_score is not None and base_rank_score != rank_score:
@@ -1699,7 +1750,7 @@ def handle_command(chat_id, text):
     cmd = raw.lower()
 
     if cmd == "/start":
-        send_message(chat_id, "Entry Bot FINAL 2 TAHAP ACCUMULATION FIRST V2 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
+        send_message(chat_id, "Entry Bot FINAL 2 TAHAP ACCUMULATION FIRST V3 aktif.\n\nCommand:\n/scan\n/scanjalur\n/statuskandidat\n/watchlist\n/autoscanon\n/autoscanoff\n/statusauto\n/listskips\n/reloadwatchlist\n/debugwatchlist")
         return
     if cmd == "/watchlist":
         send_message(chat_id, build_watchlist_text())
